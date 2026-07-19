@@ -23,7 +23,7 @@ npm install
 npm run start:dev
 ```
 
-The app will start on the default NestJS port unless overridden in future configuration.
+The app starts on port `4000` by default. Override it with `PORT` if needed.
 
 ## Scripts
 
