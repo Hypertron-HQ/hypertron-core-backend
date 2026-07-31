@@ -1,5 +1,5 @@
-import { BadRequestException, Body, Controller, Get, Param, Post } from '@nestjs/common';
-import { CreatePaymentLinkDto } from './dto/create-payment-link.dto';
+import { Body, Controller, Get, Param, Post, Query, Req } from '@nestjs/common';
+import type { Request } from 'express';
 import { PaymentLinksService } from './payment-links.service';
 
 @Controller('api/payment-link')
@@ -7,16 +7,17 @@ export class PaymentLinksController {
   constructor(private readonly paymentLinksService: PaymentLinksService) {}
 
   @Post()
-  create(@Body() body: CreatePaymentLinkDto) {
-    if (!body?.amount?.trim()) {
-      throw new BadRequestException({ error: 'amount required' });
-    }
+  create(@Req() request: Request, @Body() body: Record<string, unknown>) {
+    return this.paymentLinksService.create(request, body ?? {});
+  }
 
-    return this.paymentLinksService.create(body);
+  @Get()
+  findAll(@Req() request: Request, @Query('businessId') businessId?: string) {
+    return this.paymentLinksService.findAll(request, businessId);
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.paymentLinksService.findOne(id);
+  findPublic(@Param('id') id: string) {
+    return this.paymentLinksService.findPublic(id);
   }
 }
