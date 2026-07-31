@@ -21,5 +21,5 @@ This directory contains the transferred backend source from the original `hypert
 
 ## Current Status
 
-- The old standalone Express payment-link backend has been ported into live NestJS code.
-- The remaining Next.js backend surface has been transferred here as migration source and still needs controller/service-level porting into `src/`.
+- Live NestJS modules now cover shared Prisma access, wallet and Privy authentication, business profiles and receive addresses, workspace creation, templates, database-backed payment links, and virtual balances.
+- The remaining Next.js backend surface is preserved here as migration source. Settlement/relayer code, treasury and withdrawals, employees, compliance, RegIntel, analytics, events, and agentic features still need controller/service-level ports into `src/`.
