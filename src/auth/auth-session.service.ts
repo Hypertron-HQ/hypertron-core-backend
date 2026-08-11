@@ -3,23 +3,11 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { Request, Response } from 'express';
 
 export const DASHBOARD_SESSION_COOKIE = 'ht_dashboard';
-export const PRIVY_SESSION_COOKIE = 'ht_privy';
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7;
 
 type DashboardSessionPayload = {
   w: string;
   exp: number;
-};
-
-type PrivySessionPayload = {
-  u: string;
-  p: string;
-  exp: number;
-};
-
-export type PrivySession = {
-  appUserId: string;
-  privyId: string;
 };
 
 @Injectable()
@@ -52,40 +40,6 @@ export class AuthSessionService {
     return payload.w;
   }
 
-  createPrivySessionToken(
-    appUserId: string,
-    privyId: string,
-    secret: string,
-  ): string {
-    const payload: PrivySessionPayload = {
-      u: appUserId,
-      p: privyId,
-      exp: Math.floor(Date.now() / 1000) + SESSION_MAX_AGE_SECONDS,
-    };
-    const encodedPayload = Buffer.from(JSON.stringify(payload)).toString(
-      'base64url',
-    );
-
-    return `${encodedPayload}.${this.sign(encodedPayload, secret)}`;
-  }
-
-  getPrivySession(request: Request, secret: string): PrivySession | null {
-    const token = this.readCookie(request, PRIVY_SESSION_COOKIE);
-    const payload = token ? this.parseSignedPayload(token, secret) : null;
-    if (
-      !payload ||
-      typeof payload.u !== 'string' ||
-      !payload.u.trim() ||
-      typeof payload.p !== 'string' ||
-      !payload.p.trim() ||
-      !this.hasValidExpiration(payload.exp)
-    ) {
-      return null;
-    }
-
-    return { appUserId: payload.u.trim(), privyId: payload.p.trim() };
-  }
-
   appendDashboardSessionCookie(response: Response, token: string): void {
     response.cookie(
       DASHBOARD_SESSION_COOKIE,
@@ -94,18 +48,11 @@ export class AuthSessionService {
     );
   }
 
-  appendPrivySessionCookie(response: Response, token: string): void {
-    response.cookie(
-      PRIVY_SESSION_COOKIE,
-      token,
-      this.cookieOptions(SESSION_MAX_AGE_SECONDS),
-    );
-  }
-
   clearAuthCookies(response: Response): void {
-    const options = this.cookieOptions(0);
-    response.clearCookie(DASHBOARD_SESSION_COOKIE, options);
-    response.clearCookie(PRIVY_SESSION_COOKIE, options);
+    response.clearCookie(
+      DASHBOARD_SESSION_COOKIE,
+      this.cookieOptions(0),
+    );
   }
 
   private sign(payload: string, secret: string): string {

@@ -4,9 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import {
   AuthSessionService,
   isValidStellarAddress,
-  type PrivySession,
 } from './auth-session.service';
-import { PrivyServerService } from './privy-server.service';
 import { verifySep53SignedMessage } from './sep53-verify';
 
 const CHALLENGE_TTL_MILLISECONDS = 10 * 60 * 1000;
@@ -23,21 +21,13 @@ type VerifyInput = {
   signedMessage?: unknown;
 };
 
-type PrivyWalletInput = {
-  address?: unknown;
-  walletId?: unknown;
-};
-
-export type AppSession =
-  | { kind: 'privy'; appUserId: string; privyId: string }
-  | { kind: 'wallet'; walletAddress: string };
+export type AppSession = { kind: 'wallet'; walletAddress: string };
 
 @Injectable()
 export class AuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly sessions: AuthSessionService,
-    private readonly privy: PrivyServerService,
   ) {}
 
   async createChallenge(input: ChallengeInput) {
@@ -139,11 +129,6 @@ export class AuthService {
 
   getAppSession(request: import('express').Request): AppSession {
     const secret = this.getAuthSecret();
-    const privySession = this.sessions.getPrivySession(request, secret);
-    if (privySession) {
-      return { kind: 'privy', ...privySession };
-    }
-
     const walletAddress = this.sessions.getDashboardWallet(request, secret);
     if (walletAddress) {
       return { kind: 'wallet', walletAddress };
@@ -155,152 +140,12 @@ export class AuthService {
   async getCurrentIdentity(request: import('express').Request) {
     try {
       const session = this.getAppSession(request);
-      if (session.kind === 'wallet') {
-        return {
-          auth: 'wallet' as const,
-          walletAddress: session.walletAddress,
-        };
-      }
-
-      const user = await this.prisma.appUser.findUnique({
-        where: { id: session.appUserId },
-        select: {
-          id: true,
-          privyId: true,
-          email: true,
-          name: true,
-          stellarAddress: true,
-          privyWalletId: true,
-        },
-      });
-      if (!user) {
-        throw this.error(HttpStatus.UNAUTHORIZED, 'Unauthorized');
-      }
-
       return {
-        auth: 'privy' as const,
-        user: {
-          id: user.id,
-          privyId: user.privyId,
-          email: user.email,
-          name: user.name,
-        },
-        stellarAddress: user.stellarAddress,
-        privyWalletId: user.privyWalletId,
+        auth: 'wallet' as const,
+        walletAddress: session.walletAddress,
       };
     } catch (error) {
       this.throwMappedError(error, 'Auth session lookup error');
-    }
-  }
-
-  async synchronizePrivy(accessToken: string) {
-    try {
-      const secret = this.getAuthSecret();
-      const client = this.privy.getClient();
-      if (!client) {
-        throw this.error(
-          HttpStatus.INTERNAL_SERVER_ERROR,
-          'Server misconfiguration: Privy is not configured (PRIVY_APP_SECRET)',
-        );
-      }
-      if (!accessToken) {
-        throw this.error(HttpStatus.UNAUTHORIZED, 'Missing Bearer token');
-      }
-
-      let privyId: string;
-      try {
-        privyId = (await client.verifyAuthToken(accessToken)).userId.trim();
-      } catch {
-        throw this.error(
-          HttpStatus.UNAUTHORIZED,
-          'Invalid or expired Privy token',
-        );
-      }
-      if (!privyId) {
-        throw this.error(HttpStatus.UNAUTHORIZED, 'Invalid token claims');
-      }
-
-      let profile: { email: string | null; name: string | null } = {
-        email: null,
-        name: null,
-      };
-      try {
-        profile = pickPrivyProfile(await client.getUser(privyId));
-      } catch {
-        // A valid auth token remains sufficient if the optional profile lookup is unavailable.
-      }
-
-      const user = await this.prisma.appUser.upsert({
-        where: { privyId },
-        create: { privyId, ...profile },
-        update: {
-          ...(profile.email ? { email: profile.email } : {}),
-          ...(profile.name ? { name: profile.name } : {}),
-        },
-        select: { id: true, privyId: true, email: true, name: true },
-      });
-
-      return {
-        sessionToken: this.sessions.createPrivySessionToken(
-          user.id,
-          user.privyId,
-          secret,
-        ),
-        user,
-      };
-    } catch (error) {
-      this.throwMappedError(error, 'Privy sync error');
-    }
-  }
-
-  async getPrivyWallet(request: import('express').Request) {
-    try {
-      const session = this.requirePrivySession(this.getAppSession(request));
-      const user = await this.prisma.appUser.findUnique({
-        where: { id: session.appUserId },
-        select: { stellarAddress: true, privyWalletId: true },
-      });
-      if (!user) {
-        throw this.error(HttpStatus.UNAUTHORIZED, 'Unauthorized');
-      }
-
-      return { address: user.stellarAddress, walletId: user.privyWalletId };
-    } catch (error) {
-      this.throwMappedError(error, 'Privy wallet lookup error');
-    }
-  }
-
-  async updatePrivyWallet(
-    request: import('express').Request,
-    input: PrivyWalletInput,
-  ) {
-    try {
-      const session = this.requirePrivySession(this.getAppSession(request));
-      const address = this.requiredString(input.address);
-      if (!isValidStellarAddress(address)) {
-        throw this.error(
-          HttpStatus.BAD_REQUEST,
-          'Valid Stellar address (G...) required',
-        );
-      }
-      const walletId = this.requiredString(input.walletId) || null;
-
-      const user = await this.prisma.appUser.update({
-        where: { id: session.appUserId },
-        data: {
-          stellarAddress: address,
-          ...(walletId ? { privyWalletId: walletId } : {}),
-        },
-        select: { stellarAddress: true, privyWalletId: true },
-      });
-
-      return {
-        ok: true,
-        address: user.stellarAddress,
-        walletId: user.privyWalletId,
-      };
-    } catch (error) {
-      this.throwMappedError(error, 'Privy wallet sync error');
     }
   }
 
@@ -323,14 +168,6 @@ export class AuthService {
 
   private requiredString(value: unknown): string {
     return typeof value === 'string' ? value.trim() : '';
-  }
-
-  private requirePrivySession(session: AppSession): PrivySession {
-    if (session.kind !== 'privy') {
-      throw this.error(HttpStatus.UNAUTHORIZED, 'Unauthorized');
-    }
-
-    return { appUserId: session.appUserId, privyId: session.privyId };
   }
 
   private throwMappedError(error: unknown, context: string): never {
@@ -385,37 +222,4 @@ function isPrismaConnectionError(error: unknown): boolean {
     'ETIMEDOUT',
     'ENOTFOUND',
   ].some((fragment) => message.includes(fragment));
-}
-
-function pickPrivyProfile(user: unknown): {
-  email: string | null;
-  name: string | null;
-} {
-  const profile = user as {
-    email?: { address?: unknown } | null;
-    github?: { name?: unknown } | null;
-    google?: { email?: unknown; name?: unknown } | null;
-    twitter?: { name?: unknown } | null;
-  };
-  const email = firstNonEmptyString(
-    profile.email?.address,
-    profile.google?.email,
-  );
-  const name = firstNonEmptyString(
-    profile.google?.name,
-    profile.twitter?.name,
-    profile.github?.name,
-  );
-
-  return { email, name };
-}
-
-function firstNonEmptyString(...values: unknown[]): string | null {
-  for (const value of values) {
-    if (typeof value === 'string' && value.trim()) {
-      return value.trim();
-    }
-  }
-
-  return null;
 }

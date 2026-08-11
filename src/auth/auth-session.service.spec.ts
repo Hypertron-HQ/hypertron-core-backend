@@ -4,7 +4,8 @@ import {
   DASHBOARD_SESSION_COOKIE,
 } from './auth-session.service';
 
-const WALLET_ADDRESS = `G${'A'.repeat(55)}`;
+const WALLET_ADDRESS =
+  'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF';
 const AUTH_SECRET = 'test-session-secret';
 
 describe('AuthSessionService', () => {
@@ -45,6 +46,6 @@ describe('AuthSessionService', () => {
       headers: { cookie: `${DASHBOARD_SESSION_COOKIE}=${token}` },
     } as Request;
 
-    expect(sessions.getDashboardWallet(request, 'another-secret')).toBeNull();
+    expect(sessions.getDashboardWallet(request, 'other-secret')).toBeNull();
   });
 });

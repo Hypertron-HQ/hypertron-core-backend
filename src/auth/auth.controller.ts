@@ -37,41 +37,9 @@ export class AuthController {
     return this.authService.getCurrentIdentity(request);
   }
 
-  @Post('privy/sync')
-  async synchronizePrivy(
-    @Req() request: Request,
-    @Res({ passthrough: true }) response: Response,
-  ) {
-    const result = await this.authService.synchronizePrivy(
-      readBearerToken(request.get('authorization')),
-    );
-    this.sessions.appendPrivySessionCookie(response, result.sessionToken);
-
-    return { ok: true, user: result.user };
-  }
-
-  @Get('privy/wallet')
-  getPrivyWallet(@Req() request: Request) {
-    return this.authService.getPrivyWallet(request);
-  }
-
-  @Post('privy/wallet')
-  updatePrivyWallet(
-    @Req() request: Request,
-    @Body() body: { address?: unknown; walletId?: unknown },
-  ) {
-    return this.authService.updatePrivyWallet(request, body ?? {});
-  }
-
   @Post('logout')
   logout(@Res({ passthrough: true }) response: Response) {
     this.sessions.clearAuthCookies(response);
     return { ok: true };
   }
-}
-
-function readBearerToken(authorization: string | undefined): string {
-  return authorization?.startsWith('Bearer ')
-    ? authorization.slice(7).trim()
-    : '';
 }

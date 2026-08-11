@@ -53,7 +53,7 @@ export class PaymentLinksService {
       if (!destinationAddress) {
         throw this.error(
           HttpStatus.BAD_REQUEST,
-          'No payment destination configured. Create a vault in Settings -> Treasury, or set PAYMENT_POOL_ADDRESS in .env.',
+          'No payment destination configured. Set a receive address in Settings, or set PAYMENT_POOL_ADDRESS in .env.',
         );
       }
 
@@ -73,7 +73,6 @@ export class PaymentLinksService {
           destinationAddress,
         },
       });
-      const directVault = business.vaultAddress === destinationAddress;
       const url = `${this.paymentLinkBaseUrl(request)}/pay/${link.id}`;
 
       return {
@@ -86,7 +85,10 @@ export class PaymentLinksService {
         expiresAt: link.expiresAt,
         paymentMethods: link.paymentMethods,
         destinationAddress: link.destinationAddress,
-        mode: directVault ? 'direct_vault' : 'pool',
+        mode:
+          business.receiveAddress === destinationAddress
+            ? 'direct_receive'
+            : 'pool',
       };
     } catch (error) {
       this.throwMappedError(error, 'Payment link create error');
@@ -116,7 +118,6 @@ export class PaymentLinksService {
           linkMemo: true,
           paidAt: true,
           paymentTxHash: true,
-          commitmentTxHash: true,
           createdAt: true,
         },
       });
@@ -176,42 +177,28 @@ export class PaymentLinksService {
 
   private resolveDestinationAddress(business: {
     receiveAddress: string | null;
-    vaultAddress: string | null;
-    vaultType: string | null;
   }): string {
-    if (business.vaultAddress && business.vaultType)
-      return business.vaultAddress;
     return (
-      this.paymentPoolAddress() ||
       business.receiveAddress ||
+      this.paymentPoolAddress() ||
       this.fallbackRecipient()
     );
   }
 
   private expectedDestinationAddress(linkDestination: string): string {
-    return (
-      process.env.RELAYER_PUBLIC_KEY?.trim() ||
-      process.env.NEXT_PUBLIC_RELAYER_PUBLIC_KEY?.trim() ||
-      this.paymentPoolAddress() ||
-      linkDestination
-    );
+    return this.paymentPoolAddress() || linkDestination;
   }
 
   private paymentPoolAddress(): string {
     return (
       process.env.PAYMENT_POOL_ADDRESS?.trim() ||
       process.env.NEXT_PUBLIC_PAYMENT_POOL_ADDRESS?.trim() ||
-      process.env.NEXT_PUBLIC_MERCHANT_RECIPIENT?.trim() ||
       ''
     );
   }
 
   private fallbackRecipient(): string {
-    return (
-      process.env.MERCHANT_RECIPIENT?.trim() ||
-      process.env.NEXT_PUBLIC_MERCHANT_RECIPIENT?.trim() ||
-      ''
-    );
+    return process.env.MERCHANT_RECIPIENT?.trim() || '';
   }
 
   private paymentLinkBaseUrl(request: Request): string {

@@ -1,8 +1,4 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+// Hypertron core — Freighter identity + merchant payment links (non-custodial)
 
 generator client {
   provider = "prisma-client-js"
@@ -14,72 +10,11 @@ datasource db {
   relationMode = "prisma"
 }
 
-model User {
-  id            String    @id @default(cuid()) @map("_id")
-  clerkId       String?   @unique
-  name          String?
-  email         String?   @unique
-  emailVerified DateTime?
-  image         String?
-
-  links            Link[]
-  createdAt        DateTime @default(now())
-  subscribed       Boolean  @default(true)
-  source           String?
-  defaultWorkspace String?
-
-  @@index(source)
-  @@index(defaultWorkspace)
-}
-
-model Link {
-  id         String    @id @default(cuid()) @map("_id")
-  domain     String
-  key        String
-  url        String
-  expiresAt  DateTime?
-  expiredUrl String?
-  password   String?
-  externalId String?
-
-  proxy       Boolean @default(false)
-  title       String?
-  description String?
-  image       String?
-
-  user   User?   @relation(fields: [userId], references: [id])
-  userId String?
-
-  publicStats Boolean   @default(false)
-  clicks      Int       @default(0)
-  lastClicked DateTime?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-
-  tags LinkTag[]
-}
-
-model LinkTag {
-  id        String   @id @default(cuid()) @map("_id")
-  name      String
-  color     String   @default("blue")
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  projectId String
-  Link      Link?    @relation(fields: [linkId], references: [id])
-  linkId    String?
-
-  @@unique([name, projectId])
-  @@index(projectId)
-}
-
-// Phase 1: business identity + payment links with attribution (pool + memo)
-// Wallet = identity (no password). Profile from onboarding/settings stored here.
-// One-time login challenges (SEP-53 sign-in). Expired rows can be pruned periodically.
+// One-time Freighter SEP-53 login challenges.
 model AuthChallenge {
   id            String   @id @default(cuid()) @map("_id")
   walletAddress String
-  message       String // exact UTF-8 string the wallet must sign (shown in Freighter)
+  message       String // exact UTF-8 string the wallet must sign
   expiresAt     DateTime
   used          Boolean  @default(false)
   createdAt     DateTime @default(now())
@@ -88,241 +23,43 @@ model AuthChallenge {
   @@index([expiresAt])
 }
 
-// Privy-authenticated app user (email/social/wallet via Privy). Distinct from legacy Link `User`.
-model AppUser {
-  id             String   @id @default(cuid()) @map("_id")
-  privyId        String   @unique
-  email          String?
-  name           String?
-  image          String?
-  stellarAddress String?  // Privy embedded Stellar G-address
-  privyWalletId  String?  // Privy wallet id for server-side raw sign
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-
-  memberships Membership[]
-
-  @@index([email])
-  @@index([stellarAddress])
-}
-
-// Team membership: user ↔ business workspace with RBAC role.
-model Membership {
-  id         String   @id @default(cuid()) @map("_id")
-  userId     String
-  businessId String
-  role       String   @default("owner") // owner | admin | finance | compliance | viewer
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-
-  user     AppUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
-  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
-
-  @@unique([userId, businessId])
-  @@index([businessId])
-  @@index([userId])
-}
-
-// Stellar wallets linked to a business (signing / treasury). Login identity migrates here from Business.walletAddress.
-model LinkedWallet {
-  id         String   @id @default(cuid()) @map("_id")
-  businessId String
-  address    String // Stellar G...
-  kind       String   @default("external") // external | embedded
-  label      String?
-  isPrimary  Boolean  @default(false)
-  createdAt  DateTime @default(now())
-
-  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
-
-  @@unique([businessId, address])
-  @@index([address])
-  @@index([businessId])
-}
-
 model Business {
-  id                String    @id @default(cuid()) @map("_id")
-  walletAddress     String    @unique // Stellar G... legacy login; prefer LinkedWallet + Membership
-  receiveAddress    String?   // Stellar G... where this business receives payments (user-set)
-  name              String?   // from onboarding/settings
-  email             String?   // from onboarding/settings
-  businessNature    String?   // e.g. agency, fintech, saas
-  selectedWidgets   String[]  // widget ids from onboarding/settings
-  selectedTier      String?   // product tier id chosen during onboarding: "tier-1" | "tier-2" | "tier-3"
-  selectedTierName  String?   // display name for the chosen tier, e.g. "Tier 2"
-  selectedTierAt    DateTime? // when the tier was last set/changed
-  activeTemplateId  String? // BusinessTemplate id for sidebar tier modules (Import)
-  activeTemplateAt  DateTime?
-  complianceForm    Json?     // extended compliance form: type, geographies, monthlyTx, etc.
-  createdAt         DateTime  @default(now())
+  id              String    @id @default(cuid()) @map("_id")
+  walletAddress   String    @unique // Stellar G... Freighter login identity
+  receiveAddress  String? // Stellar G... / C... where this business receives payments
+  name            String?
+  email           String?
+  businessNature  String?
+  selectedWidgets String[]
+  selectedTier    String?
+  selectedTierName String?
+  selectedTierAt  DateTime?
+  complianceForm  Json?
+  createdAt       DateTime  @default(now())
 
-  // Hybrid Vault: dedicated Stellar account per workspace
-  vaultAddress      String?   // Stellar G... vault account (receives payments)
-  vaultSecretEnc    String?   // AES-256-GCM encrypted S... (for custodial mode)
-  vaultType         String?   // "custodial" | "hybrid" | "external"
-  vaultCreatedAt    DateTime? // when vault was created/configured
-  vaultCoSigner     String?   // Stellar G... of user co-signer (for hybrid mode)
-
-  paymentLinks      PaymentLink[]
-  withdrawals       Withdrawal[]
-  outgoingPayments  OutgoingPayment[]
-  vaultItems        DocumentVaultItem[]
-  templates         BusinessTemplate[]
-  employees         BusinessEmployee[]
-  employeePayments  BusinessEmployeePayment[]
-  memberships       Membership[]
-  linkedWallets     LinkedWallet[]
+  paymentLinks PaymentLink[]
 
   @@index(selectedTier)
-  @@index(activeTemplateId)
-  @@index(vaultAddress)
-}
-
-model BusinessTemplate {
-  id           String   @id @default(cuid()) @map("_id")
-  businessId   String
-  business     Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  name         String
-  businessName String?
-  bundleId     String
-  bundleName   String
-  description  String?
-  widgets      Json?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-
-  @@index(businessId)
-}
-
-model BusinessEmployee {
-  id           String   @id @default(cuid()) @map("_id")
-  businessId   String
-  business     Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  employeeCode String
-  name         String
-  email        String?
-  walletAddress String?
-  role         String
-  department   String
-  status       String   @default("active") // active | inactive | on_leave | pending | offboarded
-  priority     String   @default("medium") // low | medium | high
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-  payments     BusinessEmployeePayment[]
-
-  @@index(businessId)
-  @@index([businessId, status])
-  @@index([businessId, priority])
-  @@unique([businessId, employeeCode])
-}
-
-model BusinessEmployeePayment {
-  id            String           @id @default(cuid()) @map("_id")
-  businessId    String
-  business      Business         @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  employeeId    String
-  employee      BusinessEmployee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
-  amountXlm     String
-  note          String?
-  status        String           @default("completed") // completed | failed
-  payoutTxHash  String?
-  createdAt     DateTime         @default(now())
-
-  @@index(businessId)
-  @@index(employeeId)
-  @@index([employeeId, createdAt])
-}
-
-// Document vault: saved compliance checklists and other todo lists (from Compliance checker).
-model DocumentVaultItem {
-  id         String   @id @default(cuid()) @map("_id")
-  businessId String
-  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  type       String   // e.g. "compliance_checklist"
-  title      String
-  itemsJson  String   // JSON array of { id, text, done }
-  createdAt  DateTime @default(now())
-
-  @@index(businessId)
 }
 
 model PaymentLink {
   id                 String    @id @default(cuid()) @map("_id")
   businessId         String
   business           Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  amount             String?   // null = pay any amount (flexible)
-  currency           String    @default("USDC") // USDC | XLM (Circle USDC on Stellar)
-  purpose            String?   // e.g. "Invoice", "Deposit"
+  amount             String? // null = pay any amount (flexible)
+  currency           String    @default("USDC") // USDC | XLM
+  purpose            String?
   clientName         String?
-  workflowStage      String?   // e.g. "pending", "signed", "delivered"
-  metadata           String?   // optional order / project reference
-  paymentMethods     String[]  @default(["wallet", "qr"]) // wallet | qr | onramp (onramp TODO: MoneyGram)
-  expiresAt          DateTime? // null = never expires
-  linkMemo           String    @unique // unique memo for attribution when client pays to pool
-  destinationAddress String    // pool address (from env when created)
+  workflowStage      String?
+  metadata           String?
+  paymentMethods     String[]  @default(["wallet", "qr"])
+  expiresAt          DateTime?
+  linkMemo           String    @unique
+  destinationAddress String
   paidAt             DateTime?
   paymentTxHash      String?
-  // Phase 2: ZK commitment (payment → commit on-chain)
-  payerAddress       String?   // Stellar G... who paid (from tx source)
-  nonce              String?   // random nonce used to derive nullifier
-  nullifier          String?   // stored for withdraw (mark spent)
-  commitmentTxHash   String?   // Soroban tx that added the commitment
   createdAt          DateTime  @default(now())
 
   @@index(businessId)
   @@index([businessId, paidAt])
-}
-
-// Outbound sends from virtual vault balance (pool payout + nullifier spend).
-model OutgoingPayment {
-  id               String    @id @default(cuid()) @map("_id")
-  businessId       String
-  business         Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  amount           String
-  currency         String    @default("USDC") // USDC | XLM
-  recipientAddress String
-  recipientLabel   String?
-  memo             String?
-  deliveryMethod   String    @default("wallet") // wallet | email | priority
-  privateSend      Boolean   @default(false)
-  scheduledAt      DateTime?
-  status           String    @default("pending") // pending | scheduled | completed | failed
-  nullifiers       String[]  @default([])
-  payoutTxHash     String?
-  contractTxHash   String?
-  createdAt        DateTime  @default(now())
-  completedAt      DateTime?
-
-  @@index(businessId)
-  @@index([businessId, createdAt])
-  @@index([businessId, status])
-}
-
-// Dark pool: one-time memo hash for payment attribution (opaque on-chain).
-// prepare-pay creates a row; when we see a payment with this memo hash we attribute to the link.
-model PendingPaymentMemo {
-  id        String   @id @default(cuid()) @map("_id")
-  linkId    String
-  memoHash  String   // 32-byte hash as hex (64 chars)
-  amount    String
-  createdAt DateTime @default(now())
-
-  @@index(memoHash)
-  @@index(linkId)
-}
-
-// Phase 4: Withdrawals — track used nullifiers and payouts from pool
-model Withdrawal {
-  id               String    @id @default(cuid()) @map("_id")
-  businessId       String
-  business         Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  amount           String    // XLM amount withdrawn
-  nullifiers       String[]  // nullifiers marked as spent (from PaymentLinks)
-  recipientAddress String    // Stellar G... where funds were sent
-  status           String    // "pending" | "completed" | "failed"
-  payoutTxHash     String?   // Stellar tx that sent funds from pool to recipient
-  contractTxHash   String?   // Soroban withdraw tx (if contract marks nullifiers)
-  createdAt        DateTime  @default(now())
-
-  @@index(businessId)
 }

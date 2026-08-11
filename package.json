@@ -24,7 +24,6 @@
     "@nestjs/core": "^11.0.1",
     "@nestjs/platform-express": "^11.0.1",
     "@prisma/client": "^5.15.0",
-    "@privy-io/server-auth": "^1.32.5",
     "@stellar/stellar-sdk": "^14.6.1",
     "prisma": "^5.15.0",
     "reflect-metadata": "^0.2.2",

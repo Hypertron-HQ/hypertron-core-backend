@@ -10,7 +10,6 @@ const DATABASE_UNAVAILABLE_MESSAGE =
   'Database unavailable. Check DATABASE_URL in .env and that MongoDB is reachable (network/VPN).';
 
 type ProfileUpdateInput = {
-  activeTemplateId?: unknown;
   businessNature?: unknown;
   complianceForm?: unknown;
   email?: unknown;
@@ -30,10 +29,7 @@ export class BusinessService {
   async getProfile(request: Request) {
     try {
       const { business } = await this.access.getBusinessForRequest(request);
-      return this.profileJson(
-        business,
-        await this.resolveActiveTemplate(business),
-      );
+      return this.profileJson(business);
     } catch (error) {
       this.throwMappedError(error, 'Business profile GET error');
     }
@@ -42,7 +38,7 @@ export class BusinessService {
   async updateProfile(request: Request, input: ProfileUpdateInput) {
     try {
       let { business } = await this.access.getBusinessForRequest(request);
-      const update = await this.createProfileUpdate(business, input);
+      const update = this.createProfileUpdate(input);
       if (Object.keys(update).length > 0) {
         business = await this.prisma.business.update({
           where: { id: business.id },
@@ -50,10 +46,7 @@ export class BusinessService {
         });
       }
 
-      return this.profileJson(
-        business,
-        await this.resolveActiveTemplate(business),
-      );
+      return this.profileJson(business);
     } catch (error) {
       this.throwMappedError(error, 'Business profile PATCH error');
     }
@@ -105,10 +98,9 @@ export class BusinessService {
     }
   }
 
-  private async createProfileUpdate(
-    business: { activeTemplateId: string | null; id: string },
+  private createProfileUpdate(
     input: ProfileUpdateInput,
-  ): Promise<Prisma.BusinessUpdateInput> {
+  ): Prisma.BusinessUpdateInput {
     const update: Prisma.BusinessUpdateInput = {};
     const name = nullableString(input.name);
     const email = nullableString(input.email);
@@ -125,7 +117,7 @@ export class BusinessService {
       );
     }
     if (input.complianceForm !== undefined) {
-      update.complianceForm = input.complianceForm;
+      update.complianceForm = input.complianceForm as Prisma.InputJsonValue;
     }
     if (selectedTier !== undefined) {
       update.selectedTier = selectedTier;
@@ -134,103 +126,21 @@ export class BusinessService {
     if (selectedTierName !== undefined)
       update.selectedTierName = selectedTierName;
 
-    const activeTemplateId = nullableString(input.activeTemplateId);
-    if (activeTemplateId !== undefined) {
-      if (!activeTemplateId) {
-        update.activeTemplateId = null;
-        update.activeTemplateAt = null;
-      } else {
-        const template = await this.prisma.businessTemplate.findFirst({
-          where: { id: activeTemplateId, businessId: business.id },
-          select: { id: true },
-        });
-        if (!template) {
-          throw this.error(
-            HttpStatus.BAD_REQUEST,
-            'activeTemplateId not found for this business',
-          );
-        }
-        update.activeTemplateId = template.id;
-        update.activeTemplateAt = new Date();
-      }
-    }
-
-    if (selectedTier !== undefined && business.activeTemplateId) {
-      const activeTemplate = await this.prisma.businessTemplate.findFirst({
-        where: { id: business.activeTemplateId, businessId: business.id },
-        select: { bundleId: true },
-      });
-      const activeTemplateTier = activeTemplate
-        ? normalizeTierId(activeTemplate.bundleId)
-        : undefined;
-      if (
-        activeTemplateTier !== undefined &&
-        activeTemplateTier !== selectedTier
-      ) {
-        update.activeTemplateId = null;
-        update.activeTemplateAt = null;
-      }
-    }
-
     return update;
   }
 
-  private async resolveActiveTemplate(business: {
-    activeTemplateId: string | null;
+  private profileJson(business: {
+    businessNature: string | null;
+    complianceForm: Prisma.JsonValue | null;
+    email: string | null;
     id: string;
+    name: string | null;
+    receiveAddress: string | null;
+    selectedTier: string | null;
+    selectedTierAt: Date | null;
+    selectedTierName: string | null;
+    selectedWidgets: string[];
   }) {
-    if (!business.activeTemplateId) {
-      return { activeTemplateId: null, activeTemplate: null };
-    }
-
-    const template = await this.prisma.businessTemplate.findFirst({
-      where: { id: business.activeTemplateId, businessId: business.id },
-      select: {
-        id: true,
-        name: true,
-        bundleId: true,
-        bundleName: true,
-        businessName: true,
-      },
-    });
-    if (!template) {
-      await this.prisma.business
-        .update({
-          where: { id: business.id },
-          data: { activeTemplateId: null, activeTemplateAt: null },
-        })
-        .catch(() => undefined);
-      return { activeTemplateId: null, activeTemplate: null };
-    }
-
-    return {
-      activeTemplateId: template.id,
-      activeTemplate: {
-        id: template.id,
-        name: template.name,
-        bundleId: template.bundleId,
-        bundleName: template.bundleName,
-        businessName: template.businessName,
-      },
-    };
-  }
-
-  private profileJson(
-    business: {
-      activeTemplateAt: Date | null;
-      businessNature: string | null;
-      complianceForm: Prisma.JsonValue | null;
-      email: string | null;
-      id: string;
-      name: string | null;
-      receiveAddress: string | null;
-      selectedTier: string | null;
-      selectedTierAt: Date | null;
-      selectedTierName: string | null;
-      selectedWidgets: string[];
-    },
-    active: Awaited<ReturnType<BusinessService['resolveActiveTemplate']>>,
-  ) {
     return {
       businessId: business.id,
       name: business.name ?? '',
@@ -242,9 +152,6 @@ export class BusinessService {
       selectedTierAt: business.selectedTierAt?.toISOString() ?? null,
       receiveAddress: business.receiveAddress,
       complianceForm: business.complianceForm,
-      activeTemplateId: active.activeTemplateId,
-      activeTemplateAt: business.activeTemplateAt?.toISOString() ?? null,
-      activeTemplate: active.activeTemplate,
     };
   }
 

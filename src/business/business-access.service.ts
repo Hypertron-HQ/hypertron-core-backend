@@ -25,17 +25,8 @@ export class BusinessAccessService {
   ): Promise<ResolvedBusiness> {
     try {
       const session = this.auth.getAppSession(request);
-      if (session.kind === 'wallet') {
-        const business = await this.getBusinessForWallet(
-          session.walletAddress,
-          createIfMissing,
-        );
-        return { business, session };
-      }
-
-      const business = await this.getBusinessForPrivyUser(
-        session.appUserId,
-        session.privyId,
+      const business = await this.getBusinessForWallet(
+        session.walletAddress,
         createIfMissing,
       );
       return { business, session };
@@ -54,17 +45,9 @@ export class BusinessAccessService {
         throw this.error(HttpStatus.BAD_REQUEST, 'businessId required');
       }
       const session = this.auth.getAppSession(request);
-      const business =
-        session.kind === 'wallet'
-          ? await this.prisma.business.findFirst({
-              where: { id, walletAddress: session.walletAddress },
-            })
-          : (
-              await this.prisma.membership.findFirst({
-                where: { userId: session.appUserId, businessId: id },
-                include: { business: true },
-              })
-            )?.business;
+      const business = await this.prisma.business.findFirst({
+        where: { id, walletAddress: session.walletAddress },
+      });
       if (!business) {
         throw this.error(HttpStatus.FORBIDDEN, 'Forbidden');
       }
@@ -79,12 +62,7 @@ export class BusinessAccessService {
     request: Request,
     createIfMissing = true,
   ): Promise<ResolvedBusiness> {
-    const resolved = await this.getBusinessForRequest(request, createIfMissing);
-    if (resolved.session.kind !== 'wallet') {
-      throw this.error(HttpStatus.UNAUTHORIZED, 'Unauthorized');
-    }
-
-    return resolved;
+    return this.getBusinessForRequest(request, createIfMissing);
   }
 
   private async getBusinessForWallet(
@@ -102,45 +80,6 @@ export class BusinessAccessService {
     }
 
     return this.prisma.business.create({ data: { walletAddress } });
-  }
-
-  private async getBusinessForPrivyUser(
-    appUserId: string,
-    privyId: string,
-    createIfMissing: boolean,
-  ): Promise<Business> {
-    const membership = await this.prisma.membership.findFirst({
-      where: { userId: appUserId },
-      orderBy: { createdAt: 'asc' },
-      include: { business: true },
-    });
-    if (membership) {
-      return membership.business;
-    }
-    if (!createIfMissing) {
-      throw this.error(HttpStatus.NOT_FOUND, 'Business not found');
-    }
-
-    const user = await this.prisma.appUser.findUnique({
-      where: { id: appUserId },
-      select: { email: true, name: true },
-    });
-    if (!user) {
-      throw this.error(HttpStatus.UNAUTHORIZED, 'Unauthorized');
-    }
-
-    const business = await this.prisma.business.create({
-      data: {
-        walletAddress: `PRIVY_${privyId}`,
-        email: user.email,
-        name: user.name,
-      },
-    });
-    await this.prisma.membership.create({
-      data: { userId: appUserId, businessId: business.id, role: 'owner' },
-    });
-
-    return business;
   }
 
   private throwMappedError(error: unknown, context: string): never {
