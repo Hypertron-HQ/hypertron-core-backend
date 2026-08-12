@@ -49,11 +49,18 @@ export class PaymentLinksService {
         );
       }
 
-      const destinationAddress = this.resolveDestinationAddress(business);
+      const metadata = nullableString(input.metadata)?.slice(0, 2000) ?? null;
+      const privateSettlement = isPrivateSettlementMetadata(metadata);
+      const destinationAddress = this.resolveDestinationAddress(
+        business,
+        privateSettlement,
+      );
       if (!destinationAddress) {
         throw this.error(
           HttpStatus.BAD_REQUEST,
-          'No payment destination configured. Set a receive address in Settings, or set PAYMENT_POOL_ADDRESS in .env.',
+          privateSettlement
+            ? 'No payment destination configured. Set PAYMENT_POOL_ADDRESS in .env for private settlement.'
+            : 'No merchant wallet for classic payments. Set a receive address (G…) in Settings, or use the Freighter wallet linked to this business.',
         );
       }
 
@@ -66,7 +73,7 @@ export class PaymentLinksService {
           purpose: nullableString(input.purpose),
           clientName: nullableString(input.clientName),
           workflowStage: nullableString(input.workflowStage),
-          metadata: nullableString(input.metadata)?.slice(0, 2000) ?? null,
+          metadata,
           paymentMethods: normalizePaymentMethods(input.paymentMethods),
           expiresAt: parseExpiryDays(input.expiryDays),
           linkMemo,
@@ -85,10 +92,7 @@ export class PaymentLinksService {
         expiresAt: link.expiresAt,
         paymentMethods: link.paymentMethods,
         destinationAddress: link.destinationAddress,
-        mode:
-          business.receiveAddress === destinationAddress
-            ? 'direct_receive'
-            : 'pool',
+        mode: privateSettlement ? 'pool' : 'direct_receive',
       };
     } catch (error) {
       this.throwMappedError(error, 'Payment link create error');
@@ -155,9 +159,8 @@ export class PaymentLinksService {
         amount: link.amount,
         currency: normalizeCurrency(link.currency),
         memo: link.linkMemo,
-        destinationAddress: this.expectedDestinationAddress(
-          link.destinationAddress,
-        ),
+        // Return the stored destination as-is (classic = merchant G…; private may be pool).
+        destinationAddress: link.destinationAddress,
         purpose: link.purpose,
         businessName: link.business?.name?.trim() || null,
         clientName: link.clientName,
@@ -175,18 +178,33 @@ export class PaymentLinksService {
     }
   }
 
-  private resolveDestinationAddress(business: {
-    receiveAddress: string | null;
-  }): string {
-    return (
-      business.receiveAddress ||
-      this.paymentPoolAddress() ||
-      this.fallbackRecipient()
-    );
-  }
+  /**
+   * Classic (privacy off): pay the merchant G-address directly
+   *   receiveAddress → Freighter walletAddress → MERCHANT_RECIPIENT
+   * Private (privacy on): pool contract for shield deposit attribution
+   *   PAYMENT_POOL_ADDRESS → receiveAddress → walletAddress
+   */
+  private resolveDestinationAddress(
+    business: {
+      receiveAddress: string | null;
+      walletAddress: string;
+    },
+    privateSettlement: boolean,
+  ): string {
+    if (privateSettlement) {
+      return (
+        this.paymentPoolAddress() ||
+        stellarGAddress(business.receiveAddress) ||
+        stellarGAddress(business.walletAddress) ||
+        this.fallbackRecipient()
+      );
+    }
 
-  private expectedDestinationAddress(linkDestination: string): string {
-    return this.paymentPoolAddress() || linkDestination;
+    return (
+      stellarGAddress(business.receiveAddress) ||
+      stellarGAddress(business.walletAddress) ||
+      stellarGAddress(this.fallbackRecipient())
+    );
   }
 
   private paymentPoolAddress(): string {
@@ -243,6 +261,23 @@ export class PaymentLinksService {
 function stringValue(value: unknown): string {
   if (typeof value === 'string') return value.trim();
   if (typeof value === 'number') return String(value).trim();
+  return '';
+}
+
+function isPrivateSettlementMetadata(metadata: string | null): boolean {
+  if (!metadata?.trim()) return false;
+  try {
+    const parsed = JSON.parse(metadata) as { privateSettlement?: unknown };
+    return parsed?.privateSettlement === true;
+  } catch {
+    return false;
+  }
+}
+
+/** Classic Stellar payments require a G… account (not a C… contract). */
+function stellarGAddress(value: string | null | undefined): string {
+  const address = value?.trim() ?? '';
+  if (address.startsWith('G') && address.length === 56) return address;
   return '';
 }
 
