@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Req, Res } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Post, Req, Res } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { AuthSessionService } from './auth-session.service';
 import { AuthService } from './auth.service';
@@ -11,11 +11,13 @@ export class AuthController {
   ) {}
 
   @Post('challenge')
+  @HttpCode(200)
   createChallenge(@Body() body: { walletAddress?: unknown }) {
     return this.authService.createChallenge(body ?? {});
   }
 
   @Post('verify')
+  @HttpCode(200)
   async verify(
     @Body()
     body: {
@@ -38,6 +40,7 @@ export class AuthController {
   }
 
   @Post('logout')
+  @HttpCode(200)
   logout(@Res({ passthrough: true }) response: Response) {
     this.sessions.clearAuthCookies(response);
     return { ok: true };

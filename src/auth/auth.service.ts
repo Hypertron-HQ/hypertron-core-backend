@@ -1,5 +1,5 @@
 import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   AuthSessionService,
@@ -21,7 +21,11 @@ type VerifyInput = {
   signedMessage?: unknown;
 };
 
-export type AppSession = { kind: 'wallet'; walletAddress: string };
+export type AppSession = {
+  kind: 'wallet';
+  walletAddress: string;
+  actor: 'user' | 'service';
+};
 
 @Injectable()
 export class AuthService {
@@ -131,7 +135,12 @@ export class AuthService {
     const secret = this.getAuthSecret();
     const walletAddress = this.sessions.getDashboardWallet(request, secret);
     if (walletAddress) {
-      return { kind: 'wallet', walletAddress };
+      return { kind: 'wallet', walletAddress, actor: 'user' };
+    }
+
+    const serviceSession = this.getServiceAccountSession(request);
+    if (serviceSession) {
+      return serviceSession;
     }
 
     throw this.error(HttpStatus.UNAUTHORIZED, 'Unauthorized');
@@ -141,12 +150,61 @@ export class AuthService {
     try {
       const session = this.getAppSession(request);
       return {
-        auth: 'wallet' as const,
+        auth: session.actor === 'service' ? ('service' as const) : ('wallet' as const),
         walletAddress: session.walletAddress,
       };
     } catch (error) {
       this.throwMappedError(error, 'Auth session lookup error');
     }
+  }
+
+  /**
+   * Service-account key from Authorization: Bearer <key> or X-Service-Key.
+   * Used by tests and by hypertron-api → core-backend (API gateway) calls.
+   */
+  private getServiceAccountSession(
+    request: import('express').Request,
+  ): AppSession | null {
+    const provided = this.readServiceAccountKey(request);
+    if (!provided) {
+      return null;
+    }
+
+    const expected = process.env.SERVICE_ACCOUNT_API_KEY?.trim() ?? '';
+    if (!expected || !safeEqual(provided, expected)) {
+      throw this.error(HttpStatus.UNAUTHORIZED, 'Invalid service account key');
+    }
+
+    const walletAddress = process.env.SERVICE_ACCOUNT_WALLET?.trim() ?? '';
+    if (!isValidStellarAddress(walletAddress)) {
+      throw this.error(
+        HttpStatus.INTERNAL_SERVER_ERROR,
+        'Server misconfiguration: SERVICE_ACCOUNT_WALLET is not a valid Stellar G-address',
+      );
+    }
+
+    return { kind: 'wallet', walletAddress, actor: 'service' };
+  }
+
+  private readServiceAccountKey(
+    request: import('express').Request,
+  ): string | null {
+    const headerKey = request.headers['x-service-key'];
+    if (typeof headerKey === 'string' && headerKey.trim()) {
+      return headerKey.trim();
+    }
+
+    const authorization = request.headers.authorization;
+    if (typeof authorization !== 'string') {
+      return null;
+    }
+
+    const [scheme, token] = authorization.split(' ');
+    if (scheme?.toLowerCase() !== 'bearer' || !token?.trim()) {
+      return null;
+    }
+
+    return token.trim();
   }
 
   private createChallengeMessage(
@@ -222,4 +280,13 @@ function isPrismaConnectionError(error: unknown): boolean {
     'ETIMEDOUT',
     'ENOTFOUND',
   ].some((fragment) => message.includes(fragment));
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const left = Buffer.from(a);
+  const right = Buffer.from(b);
+  if (left.length !== right.length) {
+    return false;
+  }
+  return timingSafeEqual(left, right);
 }

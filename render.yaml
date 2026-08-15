@@ -27,3 +27,11 @@ services:
         sync: false
       - key: COOKIE_SAMESITE
         value: none
+      - key: SERVICE_ACCOUNT_API_KEY
+        sync: false
+      - key: SERVICE_ACCOUNT_WALLET
+        sync: false
+      - key: PAYMENTS_API_URL
+        sync: false
+      - key: INTERNAL_SERVICE_TOKEN
+        sync: false

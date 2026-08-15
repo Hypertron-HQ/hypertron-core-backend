@@ -21,6 +21,10 @@ export class BusinessAccessService {
     private readonly paymentsApiSync: PaymentsApiSyncService,
   ) {}
 
+  requireSession(request: Request): AppSession {
+    return this.auth.getAppSession(request);
+  }
+
   async getBusinessForRequest(
     request: Request,
     createIfMissing = true,

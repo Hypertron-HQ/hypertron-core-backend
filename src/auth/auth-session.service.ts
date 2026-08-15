@@ -124,10 +124,13 @@ export class AuthSessionService {
   }
 
   private cookieOptions(maxAgeSeconds: number) {
-    const sameSite =
-      process.env.COOKIE_SAMESITE?.trim().toLowerCase() === 'none'
-        ? ('none' as const)
-        : ('lax' as const);
+    const explicit = process.env.COOKIE_SAMESITE?.trim().toLowerCase();
+    const sameSite: 'none' | 'lax' =
+      explicit === 'lax'
+        ? 'lax'
+        : explicit === 'none' || process.env.NODE_ENV === 'production'
+          ? 'none'
+          : 'lax';
 
     return {
       httpOnly: true,

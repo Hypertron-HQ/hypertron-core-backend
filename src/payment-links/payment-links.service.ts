@@ -277,6 +277,8 @@ export class PaymentLinksService {
    */
   async confirm(request: Request, id: string) {
     try {
+      this.access.requireSession(request);
+
       const link = await this.prisma.paymentLink.findUnique({
         where: { id },
         include: { business: { select: { id: true } } },
@@ -285,7 +287,6 @@ export class PaymentLinksService {
         throw this.error(HttpStatus.NOT_FOUND, 'Payment link not found');
       }
 
-      // Must be the business owner confirming.
       await this.access.requireOwnedBusiness(request, link.businessId);
 
       if (link.confirmedAt) {

@@ -1,368 +1,365 @@
 # Hypertron Core Backend — Render API test report
 
-**Target:** https://hypertron-core-backend.onrender.com  
-**Tested:** 2026-08-15T17:42:17Z (UTC)  
-**Method:** live `curl` against every public route (no Freighter session cookie)
+**Target (local retest after fixes):** `http://127.0.0.1:4010`  
+**Retested:** 2026-08-15T17:58:27Z (UTC)  
+**Auth:** service account `Authorization: Bearer $SERVICE_ACCOUNT_API_KEY`  
+**Live Render:** https://hypertron-core-backend.onrender.com — still the previous image until you **deploy this commit** and set the new env vars.
 
 ---
 
-## Summary
+## Fixes applied (from previous errors)
 
-The service is **up**. MongoDB is reachable (`POST /api/auth/challenge` wrote a challenge). Auth guards and validation error paths behave as coded.
-
-**Blockers for a hosted dashboard (Vercel → Render):**
-
-1. `CORS_ORIGIN` only allows `http://localhost:3000`.
-2. Session cookie is `SameSite=Lax` (cross-site XHR will not send `ht_dashboard`).
-3. Authenticated happy paths were **not** executed (need a Freighter SEP-53 signature).
-
----
-
-## Issues
-
-### 1. CORS only allows localhost (production frontend will fail)
-
-`CORS_ORIGIN` on Render appears to be `http://localhost:3000`.
-
-| Origin | `Access-Control-Allow-Origin` |
+| Issue | Fix |
 |---|---|
-| `http://localhost:3000` | set |
-| `https://example.com` | **missing** (browser will block) |
+| CORS only `localhost` | `CORS_ORIGIN` is still required for extra origins. `FRONTEND_URL` and `APP_URL` are now also allowed origins. Set production frontend URL on Render. |
+| Cookie `SameSite=Lax` in production | Production now defaults to `SameSite=None; Secure`. Override with `COOKIE_SAMESITE=lax` only if the dashboard is same-site. |
+| Authenticated flows untested | Service account API key (`ht_svc_…`) can call all session-gated routes. |
+| POST challenge/logout returned 201 | `@HttpCode(200)` on those routes. |
+| Confirm unknown id without auth returned 404 | Auth is checked first → **401**, then **404** if the link is missing. |
+| `/health` did not check Mongo | `/health` now pings the database (`database: "ok"`). `GET /` stays process liveness. |
 
-**Fix on Render:**
+---
+
+## Service account
+
+Set these on **local `.env` and Render** (never commit the real key):
+
+```
+SERVICE_ACCOUNT_API_KEY=ht_svc_<your-secret>
+SERVICE_ACCOUNT_WALLET=GSVCACCOUNTTESTNET00000000000000000000000000000000000000
+```
+
+Use either header:
+
+```
+Authorization: Bearer $SERVICE_ACCOUNT_API_KEY
+```
+
+or
+
+```
+X-Service-Key: $SERVICE_ACCOUNT_API_KEY
+```
+
+`GET /api/auth/me` returns `{ "auth": "service", "walletAddress": "<SERVICE_ACCOUNT_WALLET>" }`.  
+The Business row for that wallet is created on first profile/link call.
+
+**Render also needs (dashboard CORS):**
 
 ```
 CORS_ORIGIN=https://<your-frontend-host>
 FRONTEND_URL=https://<your-frontend-host>
-```
-
-To keep local + production:
-
-```
-CORS_ORIGIN=https://<your-frontend-host>,http://localhost:3000
-```
-
-### 2. Session cookie is `SameSite=Lax`
-
-Logout response:
-
-```
-set-cookie: ht_dashboard=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Secure; SameSite=Lax
-```
-
-A frontend on another host (e.g. Vercel) talking to this API is **cross-site**. Browsers will not send `SameSite=Lax` cookies on credentialed XHR.
-
-**Fix on Render:**
-
-```
 COOKIE_SAMESITE=none
 ```
 
-Requires HTTPS (`Secure` is already set).
+Prompt for wiring this key into `hypertron-api`: `HYPERTRON_API_SERVICE_ACCOUNT_PROMPT.md`.
 
-### 3. Authenticated flows not tested
+---
 
-These need a real Freighter signature of the challenge message, then `Cookie: ht_dashboard=...`:
+## Result table (local, after fix)
 
-- `POST /api/auth/verify` (valid signature)
-- `GET /api/auth/me` (with cookie)
-- `GET/PATCH /api/business/profile`
-- `POST/PATCH /api/business/link`
-- `POST /api/payment-link` (create)
-- `GET /api/payment-link?businessId=...` (list)
-- `POST /api/payment-link/:id/confirm`
-
-### 4. Minor (not blockers)
-
-| Item | Observed |
-|---|---|
-| Nest POST status | `201` on `/api/auth/challenge` and `/api/auth/logout` (not `200`) |
-| Confirm without cookie, unknown id | `404 Payment link not found` (lookup before auth), not `401` |
-| `GET /health` | Process liveness only; does not check Mongo. Challenge already proved DB is up. |
+| # | Request | Status | Result |
+|---|---|---|---|
+| 1 | `GET /` | 200 | liveness ok |
+| 2 | `GET /health` | 200 | `database: ok` |
+| 3 | OPTIONS CORS `http://localhost:3000` | 204 | ACAO set |
+| 4 | challenge missing wallet | 400 | validation |
+| 5 | challenge valid G-address | **200** (was 201) | challengeId |
+| 6 | `GET /api/auth/me` no auth | 401 | Unauthorized |
+| 7 | `GET /api/auth/me` bad key | 401 | Invalid service account key |
+| 8 | `GET /api/auth/me` service key | **200** | `auth: service` |
+| 9 | `POST /api/auth/logout` | **200** (was 201) | `{ok:true}` |
+| 10 | confirm unknown, no auth | **401** (was 404) | Unauthorized |
+| 11 | confirm unknown, with key | 404 | Payment link not found |
+| 12 | `GET /api/business/profile` | **200** | business created |
+| 13 | `PATCH /api/business/profile` | **200** | name updated |
+| 14 | `POST /api/business/link` | 201 | receiveAddress set |
+| 15 | `PATCH /api/business/link` | **200** | receiveAddress set |
+| 16 | `POST /api/payment-link` | 201 | link created |
+| 17 | `GET /api/payment-link?businessId=` | **200** | list |
+| 18 | `GET /api/payment-link/:id` public | **200** | checkout payload |
+| 19 | claim empty body | 400 | txHash required |
+| 20 | claim with txHash | 201 | claimed |
+| 21 | confirm with service key | 201 | confirmed/paid |
 
 ---
 
 ## Curl log and API responses
 
-Base URL used in all commands: `https://hypertron-core-backend.onrender.com`
+Base: `http://127.0.0.1:4010`  
+Header: `-H "Authorization: Bearer $SERVICE_ACCOUNT_API_KEY"`
 
-Test wallet (format only, not a signed session):
+Service wallet:
 
-`GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR`
+`GSVCACCOUNTTESTNET00000000000000000000000000000000000000`
 
-Unknown id used for 404 cases: `clxxxxxxxxxxxxxxxxxxxxxxxxx`
+Created in this run:
+
+- `businessId`: `cmsuoj7ws0001uune7slmpnts`
+- `linkId`: `cmsuojk7d0003uunehic2uv2x`
 
 ### Health
 
 ```bash
-curl -i https://hypertron-core-backend.onrender.com/
+curl -sS http://127.0.0.1:4010/
 ```
 
-**HTTP/2 200**
-
-```json
-{"service":"hypertron-core-backend","status":"ok"}
-```
+**200** `{"service":"hypertron-core-backend","status":"ok"}`
 
 ```bash
-curl -i https://hypertron-core-backend.onrender.com/health
+curl -sS http://127.0.0.1:4010/health
 ```
 
-**HTTP/2 200**
+**200** `{"service":"hypertron-core-backend","status":"ok","database":"ok"}`
 
-```json
-{"service":"hypertron-core-backend","status":"ok"}
-```
-
-### CORS preflight
+### CORS
 
 ```bash
-curl -i -X OPTIONS https://hypertron-core-backend.onrender.com/api/auth/me \
+curl -sS -D - -o /dev/null -X OPTIONS http://127.0.0.1:4010/api/auth/me \
   -H "Origin: http://localhost:3000" \
-  -H "Access-Control-Request-Method: GET" \
-  -H "Access-Control-Request-Headers: content-type"
+  -H "Access-Control-Request-Method: GET"
 ```
 
-**HTTP/2 204**
-
-```
-access-control-allow-credentials: true
-access-control-allow-headers: content-type
-access-control-allow-methods: GET,HEAD,PUT,PATCH,POST,DELETE
-access-control-allow-origin: http://localhost:3000
-```
-
-```bash
-curl -i -X OPTIONS https://hypertron-core-backend.onrender.com/api/auth/me \
-  -H "Origin: https://example.com" \
-  -H "Access-Control-Request-Method: GET" \
-  -H "Access-Control-Request-Headers: content-type"
-```
-
-**HTTP/2 204** — no `access-control-allow-origin`
+**204** `Access-Control-Allow-Origin: http://localhost:3000`
 
 ### Auth
 
 ```bash
-curl -i -X POST https://hypertron-core-backend.onrender.com/api/auth/challenge \
-  -H "Content-Type: application/json" \
-  -d '{}'
+curl -sS -X POST http://127.0.0.1:4010/api/auth/challenge \
+  -H "Content-Type: application/json" -d '{}'
 ```
 
-**HTTP/2 400**
-
-```json
-{"error":"walletAddress required (Stellar G..., 56 chars)"}
-```
+**400** `{"error":"walletAddress required (Stellar G..., 56 chars)"}`
 
 ```bash
-curl -i -X POST https://hypertron-core-backend.onrender.com/api/auth/challenge \
-  -H "Content-Type: application/json" \
-  -d '{"walletAddress":"not-a-stellar-address"}'
-```
-
-**HTTP/2 400**
-
-```json
-{"error":"walletAddress required (Stellar G..., 56 chars)"}
-```
-
-```bash
-curl -i -X POST https://hypertron-core-backend.onrender.com/api/auth/challenge \
+curl -sS -X POST http://127.0.0.1:4010/api/auth/challenge \
   -H "Content-Type: application/json" \
   -d '{"walletAddress":"GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR"}'
 ```
 
-**HTTP/2 201** (DB write succeeded)
+**200**
 
 ```json
 {
-  "challengeId": "cmsunyhox0002osaop94bk8ay",
-  "message": "Hypertron dashboard sign-in\n\nWallet: GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR\nNonce: e9ddd2ab3a9e92c8d14f1545a8716ba3128c05afbea4cbf3\nExpires (UTC): 2026-08-15T17:52:21.201Z\n\nSigning this message proves you control this wallet. Do not share this signature.",
-  "expiresAt": "2026-08-15T17:52:21.201Z"
+  "challengeId": "cmsuoj7mf0000uunecoabdsr2",
+  "message": "Hypertron dashboard sign-in\n\nWallet: GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR\nNonce: d47fd6edf2445b220b869d504ecff27b43dda92f588dbefa\nExpires (UTC): 2026-08-15T18:08:27.926Z\n\nSigning this message proves you control this wallet. Do not share this signature.",
+  "expiresAt": "2026-08-15T18:08:27.926Z"
 }
 ```
 
 ```bash
-curl -i -X POST https://hypertron-core-backend.onrender.com/api/auth/verify \
+curl -sS http://127.0.0.1:4010/api/auth/me
+```
+
+**401** `{"error":"Unauthorized"}`
+
+```bash
+curl -sS http://127.0.0.1:4010/api/auth/me \
+  -H "Authorization: Bearer ht_svc_invalid"
+```
+
+**401** `{"error":"Invalid service account key"}`
+
+```bash
+curl -sS http://127.0.0.1:4010/api/auth/me \
+  -H "Authorization: Bearer $SERVICE_ACCOUNT_API_KEY"
+```
+
+**200**
+
+```json
+{
+  "auth": "service",
+  "walletAddress": "GSVCACCOUNTTESTNET00000000000000000000000000000000000000"
+}
+```
+
+```bash
+curl -sS -D - -X POST http://127.0.0.1:4010/api/auth/logout
+```
+
+**200** `{"ok":true}`  
+`Set-Cookie: ht_dashboard=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=Lax`  
+(local `NODE_ENV` is not `production`, so SameSite stays Lax unless you set `COOKIE_SAMESITE=none`)
+
+### Confirm auth order
+
+```bash
+curl -sS -X POST http://127.0.0.1:4010/api/payment-link/clxxxxxxxxxxxxxxxxxxxxxxxxx/confirm
+```
+
+**401** `{"error":"Unauthorized"}`
+
+```bash
+curl -sS -X POST http://127.0.0.1:4010/api/payment-link/clxxxxxxxxxxxxxxxxxxxxxxxxx/confirm \
+  -H "Authorization: Bearer $SERVICE_ACCOUNT_API_KEY"
+```
+
+**404** `{"error":"Payment link not found"}`
+
+### Business (service account)
+
+```bash
+curl -sS http://127.0.0.1:4010/api/business/profile \
+  -H "Authorization: Bearer $SERVICE_ACCOUNT_API_KEY"
+```
+
+**200** (first call created the business)
+
+```json
+{
+  "businessId": "cmsuoj7ws0001uune7slmpnts",
+  "name": "",
+  "email": "",
+  "businessNature": "",
+  "selectedWidgets": [],
+  "selectedTier": null,
+  "selectedTierName": null,
+  "selectedTierAt": null,
+  "receiveAddress": null,
+  "viewPub": null,
+  "spendPub": null,
+  "complianceForm": null
+}
+```
+
+```bash
+curl -sS -X PATCH http://127.0.0.1:4010/api/business/profile \
+  -H "Authorization: Bearer $SERVICE_ACCOUNT_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{}'
+  -d '{"name":"Service Account Test Co"}'
 ```
 
-**HTTP/2 400**
-
-```json
-{"error":"challengeId, walletAddress, and signedMessage required"}
-```
+**200** `"name":"Service Account Test Co"`
 
 ```bash
-curl -i -X POST https://hypertron-core-backend.onrender.com/api/auth/verify \
-  -H "Content-Type: application/json" \
-  -d '{"challengeId":"clxxxxxxxxxxxxxxxxxxxxxxxxx","walletAddress":"GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR","signedMessage":"aaaa"}'
-```
-
-**HTTP/2 400**
-
-```json
-{"error":"Invalid or used challenge"}
-```
-
-```bash
-curl -i https://hypertron-core-backend.onrender.com/api/auth/me
-```
-
-**HTTP/2 401**
-
-```json
-{"error":"Unauthorized"}
-```
-
-```bash
-curl -i -X POST https://hypertron-core-backend.onrender.com/api/auth/logout
-```
-
-**HTTP/2 201**
-
-```json
-{"ok":true}
-```
-
-```
-set-cookie: ht_dashboard=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; Secure; SameSite=Lax
-```
-
-### Business (no cookie)
-
-```bash
-curl -i https://hypertron-core-backend.onrender.com/api/business/profile
-```
-
-**HTTP/2 401** `{"error":"Unauthorized"}`
-
-```bash
-curl -i -X PATCH https://hypertron-core-backend.onrender.com/api/business/profile \
-  -H "Content-Type: application/json" \
-  -d '{"name":"Test Co"}'
-```
-
-**HTTP/2 401** `{"error":"Unauthorized"}`
-
-```bash
-curl -i -X POST https://hypertron-core-backend.onrender.com/api/business/link \
+curl -sS -X POST http://127.0.0.1:4010/api/business/link \
+  -H "Authorization: Bearer $SERVICE_ACCOUNT_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"receiveAddress":"GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR"}'
 ```
 
-**HTTP/2 401** `{"error":"Unauthorized"}`
+**201**
+
+```json
+{
+  "businessId": "cmsuoj7ws0001uune7slmpnts",
+  "receiveAddress": "GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR"
+}
+```
 
 ```bash
-curl -i -X PATCH https://hypertron-core-backend.onrender.com/api/business/link \
+curl -sS -X PATCH http://127.0.0.1:4010/api/business/link \
+  -H "Authorization: Bearer $SERVICE_ACCOUNT_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"receiveAddress":"GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR"}'
 ```
 
-**HTTP/2 401** `{"error":"Unauthorized"}`
+**200** same payload.
 
 ### Payment links
 
 ```bash
-curl -i -X POST https://hypertron-core-backend.onrender.com/api/payment-link \
+curl -sS -X POST http://127.0.0.1:4010/api/payment-link \
+  -H "Authorization: Bearer $SERVICE_ACCOUNT_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"businessId":"x","amount":"1"}'
+  -d '{"businessId":"cmsuoj7ws0001uune7slmpnts","amount":"1.00","currency":"USDC","purpose":"service-account-test"}'
 ```
 
-**HTTP/2 401** `{"error":"Unauthorized"}`
-
-```bash
-curl -i https://hypertron-core-backend.onrender.com/api/payment-link
-```
-
-**HTTP/2 400** `{"error":"businessId query required"}`
-
-```bash
-curl -i "https://hypertron-core-backend.onrender.com/api/payment-link?businessId=x"
-```
-
-**HTTP/2 401** `{"error":"Unauthorized"}`
-
-```bash
-curl -i https://hypertron-core-backend.onrender.com/api/payment-link/clxxxxxxxxxxxxxxxxxxxxxxxxx
-```
-
-**HTTP/2 404** `{"error":"Payment link not found"}`
-
-```bash
-curl -i -X POST https://hypertron-core-backend.onrender.com/api/payment-link/clxxxxxxxxxxxxxxxxxxxxxxxxx/claim \
-  -H "Content-Type: application/json" \
-  -d '{}'
-```
-
-**HTTP/2 400** `{"error":"txHash required"}`
-
-```bash
-curl -i -X POST https://hypertron-core-backend.onrender.com/api/payment-link/clxxxxxxxxxxxxxxxxxxxxxxxxx/claim \
-  -H "Content-Type: application/json" \
-  -d '{"txHash":"abc","outCommitment":"def"}'
-```
-
-**HTTP/2 404** `{"error":"Payment link not found"}`
-
-```bash
-curl -i -X POST https://hypertron-core-backend.onrender.com/api/payment-link/clxxxxxxxxxxxxxxxxxxxxxxxxx/confirm
-```
-
-**HTTP/2 404** `{"error":"Payment link not found"}`
-
-```bash
-curl -i https://hypertron-core-backend.onrender.com/does-not-exist
-```
-
-**HTTP/2 404**
+**201**
 
 ```json
-{"message":"Cannot GET /does-not-exist","error":"Not Found","statusCode":404}
+{
+  "linkId": "cmsuojk7d0003uunehic2uv2x",
+  "url": "http://localhost:3000/pay/cmsuojk7d0003uunehic2uv2x",
+  "qrPayload": "http://localhost:3000/pay/cmsuojk7d0003uunehic2uv2x",
+  "memo": "hpl_msuojk5v_f35c2f1c2905",
+  "amount": "1.00",
+  "currency": "USDC",
+  "expiresAt": null,
+  "paymentMethods": ["wallet", "qr"],
+  "destinationAddress": "GAIH3ULLFQ4DGSECF2AR555KZ4KNDGEKN4AFI4SU2M7B43MGK3QJZNSR",
+  "mode": "direct_receive",
+  "shieldSalt": null,
+  "shieldCommitment": null,
+  "shieldProof": null
+}
+```
+
+```bash
+curl -sS "http://127.0.0.1:4010/api/payment-link?businessId=cmsuoj7ws0001uune7slmpnts" \
+  -H "Authorization: Bearer $SERVICE_ACCOUNT_API_KEY"
+```
+
+**200** `{"links":[{ "id":"cmsuojk7d0003uunehic2uv2x", ... }]}`
+
+```bash
+curl -sS http://127.0.0.1:4010/api/payment-link/cmsuojk7d0003uunehic2uv2x
+```
+
+**200** public checkout payload (`businessName`: `Service Account Test Co`).
+
+```bash
+curl -sS -X POST http://127.0.0.1:4010/api/payment-link/cmsuojk7d0003uunehic2uv2x/claim \
+  -H "Content-Type: application/json" -d '{}'
+```
+
+**400** `{"error":"txHash required"}`
+
+```bash
+curl -sS -X POST http://127.0.0.1:4010/api/payment-link/cmsuojk7d0003uunehic2uv2x/claim \
+  -H "Content-Type: application/json" \
+  -d '{"txHash":"testhash","outCommitment":"aabbcc"}'
+```
+
+**201**
+
+```json
+{
+  "id": "cmsuojk7d0003uunehic2uv2x",
+  "claimedAt": "2026-08-15T17:58:44.829Z",
+  "claimTxHash": "testhash",
+  "claimOutCommitment": "0xaabbcc"
+}
+```
+
+```bash
+curl -sS -X POST http://127.0.0.1:4010/api/payment-link/cmsuojk7d0003uunehic2uv2x/confirm \
+  -H "Authorization: Bearer $SERVICE_ACCOUNT_API_KEY"
+```
+
+**201**
+
+```json
+{
+  "id": "cmsuojk7d0003uunehic2uv2x",
+  "confirmedAt": "2026-08-15T17:58:45.211Z",
+  "paidAt": "2026-08-15T17:58:45.211Z",
+  "paymentTxHash": "testhash"
+}
 ```
 
 ---
 
-## Result table
+## Deploy checklist (Render)
 
-| # | Request | Status | Body / note | Pass? |
-|---|---|---|---|---|
-| 1 | `GET /` | 200 | service ok | yes |
-| 2 | `GET /health` | 200 | service ok | yes |
-| 3 | OPTIONS CORS localhost:3000 | 204 | ACAO set | yes |
-| 4 | OPTIONS CORS https://example.com | 204 | **no ACAO** | fail for hosted FE |
-| 5 | challenge missing wallet | 400 | walletAddress required | yes |
-| 6 | challenge invalid wallet | 400 | walletAddress required | yes |
-| 7 | challenge valid G-address | 201 | challengeId + message | yes (DB ok) |
-| 8 | verify missing fields | 400 | fields required | yes |
-| 9 | verify fake challenge | 400 | Invalid or used challenge | yes |
-| 10 | `GET /api/auth/me` no cookie | 401 | Unauthorized | yes |
-| 11 | `POST /api/auth/logout` | 201 | ok; SameSite=Lax | cookie config issue |
-| 12–15 | business routes no cookie | 401 | Unauthorized | yes |
-| 16 | create payment-link no cookie | 401 | Unauthorized | yes |
-| 17 | list payment-link no businessId | 400 | businessId query required | yes |
-| 18 | list payment-link no cookie | 401 | Unauthorized | yes |
-| 19 | public get unknown id | 404 | Payment link not found | yes |
-| 20 | claim empty body | 400 | txHash required | yes |
-| 21 | claim unknown id | 404 | Payment link not found | yes |
-| 22 | confirm unknown id, no cookie | 404 | not 401 | minor |
-| 23 | unknown path | 404 | Nest default | yes |
-
----
-
-## Render env vars to set
+1. Push this commit (Dockerfile + service-account auth).
+2. Set env:
 
 ```
-NODE_ENV=production
-DATABASE_URL=<atlas uri>
-AUTH_SECRET=<long secret, match hypertron-api if cookies are shared>
-CORS_ORIGIN=https://<your-frontend-host>
-FRONTEND_URL=https://<your-frontend-host>
+CORS_ORIGIN=https://<frontend>
+FRONTEND_URL=https://<frontend>
 COOKIE_SAMESITE=none
-PAYMENT_POOL_ADDRESS=<optional>
-MERCHANT_RECIPIENT=<optional>
+SERVICE_ACCOUNT_API_KEY=<same ht_svc_ key as local>
+SERVICE_ACCOUNT_WALLET=GSVCACCOUNTTESTNET00000000000000000000000000000000000000
 ```
 
-Do **not** set `PORT` on a Docker service; Render injects it.
+3. Redeploy, then:
+
+```bash
+curl -sS https://hypertron-core-backend.onrender.com/health
+curl -sS https://hypertron-core-backend.onrender.com/api/auth/me \
+  -H "Authorization: Bearer $SERVICE_ACCOUNT_API_KEY"
+```
+
+Expect `{"auth":"service","walletAddress":"GSVC…"}`.
