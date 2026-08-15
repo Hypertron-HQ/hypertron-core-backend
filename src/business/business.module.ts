@@ -4,11 +4,16 @@ import { PrismaModule } from '../prisma/prisma.module';
 import { BusinessAccessService } from './business-access.service';
 import { BusinessController } from './business.controller';
 import { BusinessService } from './business.service';
+import { PaymentsApiSyncService } from './payments-api-sync.service';
 
 @Module({
   imports: [AuthModule, PrismaModule],
   controllers: [BusinessController],
-  providers: [BusinessAccessService, BusinessService],
-  exports: [BusinessAccessService],
+  providers: [
+    BusinessAccessService,
+    BusinessService,
+    PaymentsApiSyncService,
+  ],
+  exports: [BusinessAccessService, PaymentsApiSyncService],
 })
 export class BusinessModule {}

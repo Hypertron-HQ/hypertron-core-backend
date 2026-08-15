@@ -20,6 +20,10 @@ type PaymentLinkInput = {
   paymentMethods?: unknown;
   purpose?: unknown;
   workflowStage?: unknown;
+  /** Merchant-precreated note material (private settlement only). */
+  shieldSalt?: unknown;
+  shieldCommitment?: unknown;
+  shieldProof?: unknown;
 };
 
 @Injectable()
@@ -51,6 +55,19 @@ export class PaymentLinksService {
 
       const metadata = nullableString(input.metadata)?.slice(0, 2000) ?? null;
       const privateSettlement = isPrivateSettlementMetadata(metadata);
+      const shield = normalizeShieldFields(input, privateSettlement);
+      if (privateSettlement && !business.viewPub?.trim()) {
+        throw this.error(
+          HttpStatus.BAD_REQUEST,
+          'Private settlement requires a viewing public key. Set viewPub on the business profile first.',
+        );
+      }
+      if (privateSettlement && !business.spendPub?.trim()) {
+        throw this.error(
+          HttpStatus.BAD_REQUEST,
+          'Private settlement requires a spend public key. Set spendPub on the business profile first.',
+        );
+      }
       const destinationAddress = this.resolveDestinationAddress(
         business,
         privateSettlement,
@@ -78,6 +95,9 @@ export class PaymentLinksService {
           expiresAt: parseExpiryDays(input.expiryDays),
           linkMemo,
           destinationAddress,
+          shieldSalt: shield.shieldSalt,
+          shieldCommitment: shield.shieldCommitment,
+          shieldProof: shield.shieldProof,
         },
       });
       const url = `${this.paymentLinkBaseUrl(request)}/pay/${link.id}`;
@@ -93,6 +113,9 @@ export class PaymentLinksService {
         paymentMethods: link.paymentMethods,
         destinationAddress: link.destinationAddress,
         mode: privateSettlement ? 'pool' : 'direct_receive',
+        shieldSalt: link.shieldSalt,
+        shieldCommitment: link.shieldCommitment,
+        shieldProof: link.shieldProof,
       };
     } catch (error) {
       this.throwMappedError(error, 'Payment link create error');
@@ -120,8 +143,15 @@ export class PaymentLinksService {
           paymentMethods: true,
           expiresAt: true,
           linkMemo: true,
+          shieldSalt: true,
+          shieldCommitment: true,
+          shieldProof: true,
           paidAt: true,
           paymentTxHash: true,
+          claimedAt: true,
+          claimTxHash: true,
+          claimOutCommitment: true,
+          confirmedAt: true,
           createdAt: true,
         },
       });
@@ -142,7 +172,9 @@ export class PaymentLinksService {
     try {
       const link = await this.prisma.paymentLink.findUnique({
         where: { id },
-        include: { business: { select: { name: true } } },
+        include: {
+          business: { select: { name: true, viewPub: true, spendPub: true } },
+        },
       });
       if (!link) {
         throw this.error(HttpStatus.NOT_FOUND, 'Payment link not found');
@@ -159,7 +191,6 @@ export class PaymentLinksService {
         amount: link.amount,
         currency: normalizeCurrency(link.currency),
         memo: link.linkMemo,
-        // Return the stored destination as-is (classic = merchant G…; private may be pool).
         destinationAddress: link.destinationAddress,
         purpose: link.purpose,
         businessName: link.business?.name?.trim() || null,
@@ -172,9 +203,116 @@ export class PaymentLinksService {
         expiresAt: link.expiresAt,
         paidAt: link.paidAt,
         paymentTxHash: link.paymentTxHash,
+        claimedAt: link.claimedAt,
+        claimTxHash: link.claimTxHash,
+        confirmedAt: link.confirmedAt,
+        shieldCommitment: link.shieldCommitment,
+        shieldProof: link.shieldProof,
+        viewPub: link.business?.viewPub ?? null,
+        spendPub: link.business?.spendPub ?? null,
       };
     } catch (error) {
       this.throwMappedError(error, 'Payment link get error');
+    }
+  }
+
+  /**
+   * Payer claims a link after submitting a private transfer.
+   * Records the transfer txHash and out_cm1 (recipient note commitment).
+   */
+  async claim(
+    id: string,
+    input: { txHash?: unknown; outCommitment?: unknown },
+  ) {
+    try {
+      const txHash = stringValue(input.txHash);
+      const outCommitment = stringValue(input.outCommitment);
+
+      if (!txHash) {
+        throw this.error(HttpStatus.BAD_REQUEST, 'txHash required');
+      }
+      if (!outCommitment) {
+        throw this.error(HttpStatus.BAD_REQUEST, 'outCommitment required');
+      }
+
+      const link = await this.prisma.paymentLink.findUnique({ where: { id } });
+      if (!link) {
+        throw this.error(HttpStatus.NOT_FOUND, 'Payment link not found');
+      }
+      if (link.paidAt || link.confirmedAt) {
+        throw this.error(HttpStatus.CONFLICT, 'Link already paid');
+      }
+      if (link.claimedAt) {
+        throw this.error(HttpStatus.CONFLICT, 'Link already claimed');
+      }
+      if (isLinkExpired(link.expiresAt)) {
+        throw this.error(HttpStatus.GONE, 'Payment link has expired');
+      }
+
+      const updated = await this.prisma.paymentLink.update({
+        where: { id },
+        data: {
+          claimedAt: new Date(),
+          claimTxHash: txHash,
+          claimOutCommitment: outCommitment.startsWith('0x')
+            ? outCommitment
+            : `0x${outCommitment}`,
+        },
+      });
+
+      return {
+        id: updated.id,
+        claimedAt: updated.claimedAt,
+        claimTxHash: updated.claimTxHash,
+        claimOutCommitment: updated.claimOutCommitment,
+      };
+    } catch (error) {
+      this.throwMappedError(error, 'Payment link claim error');
+    }
+  }
+
+  /**
+   * Merchant confirms after decrypting the received note.
+   * Marks the link as fully paid/confirmed.
+   */
+  async confirm(request: Request, id: string) {
+    try {
+      const link = await this.prisma.paymentLink.findUnique({
+        where: { id },
+        include: { business: { select: { id: true } } },
+      });
+      if (!link) {
+        throw this.error(HttpStatus.NOT_FOUND, 'Payment link not found');
+      }
+
+      // Must be the business owner confirming.
+      await this.access.requireOwnedBusiness(request, link.businessId);
+
+      if (link.confirmedAt) {
+        throw this.error(HttpStatus.CONFLICT, 'Link already confirmed');
+      }
+      if (!link.claimedAt && !link.paidAt) {
+        throw this.error(HttpStatus.BAD_REQUEST, 'Link has not been claimed or paid yet');
+      }
+
+      const updated = await this.prisma.paymentLink.update({
+        where: { id },
+        data: {
+          confirmedAt: new Date(),
+          // Also set paidAt if not already set (for transfer claims).
+          paidAt: link.paidAt ?? new Date(),
+          paymentTxHash: link.paymentTxHash ?? link.claimTxHash,
+        },
+      });
+
+      return {
+        id: updated.id,
+        confirmedAt: updated.confirmedAt,
+        paidAt: updated.paidAt,
+        paymentTxHash: updated.paymentTxHash,
+      };
+    } catch (error) {
+      this.throwMappedError(error, 'Payment link confirm error');
     }
   }
 
@@ -272,6 +410,50 @@ function isPrivateSettlementMetadata(metadata: string | null): boolean {
   } catch {
     return false;
   }
+}
+
+function normalizeShieldFields(
+  input: PaymentLinkInput,
+  privateSettlement: boolean,
+): {
+  shieldSalt: string | null;
+  shieldCommitment: string | null;
+  shieldProof: string | null;
+} {
+  const shieldSalt = nullableString(input.shieldSalt);
+  const shieldCommitment = nullableString(input.shieldCommitment);
+  const shieldProof = nullableString(input.shieldProof);
+
+  if (!privateSettlement) {
+    return { shieldSalt: null, shieldCommitment: null, shieldProof: null };
+  }
+
+  if (!shieldSalt || !shieldCommitment || !shieldProof) {
+    throw new HttpException(
+      {
+        error:
+          'Private settlement requires shieldSalt, shieldCommitment, and shieldProof (merchant-precreated note).',
+      },
+      HttpStatus.BAD_REQUEST,
+    );
+  }
+
+  // Commitment is 32 bytes hex (64 hex chars, optional 0x).
+  const commitmentHex = shieldCommitment.replace(/^0x/i, '');
+  if (!/^[0-9a-fA-F]{64}$/.test(commitmentHex)) {
+    throw new HttpException(
+      { error: 'shieldCommitment must be 32-byte hex' },
+      HttpStatus.BAD_REQUEST,
+    );
+  }
+
+  return {
+    shieldSalt,
+    shieldCommitment: shieldCommitment.startsWith('0x')
+      ? shieldCommitment
+      : `0x${commitmentHex}`,
+    shieldProof,
+  };
 }
 
 /** Classic Stellar payments require a G… account (not a C… contract). */

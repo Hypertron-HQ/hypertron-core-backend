@@ -4,6 +4,7 @@ import type { Request } from 'express';
 import { isValidStellarAddress } from '../auth/auth-session.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { BusinessAccessService } from './business-access.service';
+import { PaymentsApiSyncService } from './payments-api-sync.service';
 
 const ALLOWED_TIER_IDS = new Set(['tier-1', 'tier-2', 'tier-3']);
 const DATABASE_UNAVAILABLE_MESSAGE =
@@ -17,6 +18,10 @@ type ProfileUpdateInput = {
   selectedTier?: unknown;
   selectedTierName?: unknown;
   selectedWidgets?: unknown;
+  /** Public viewing key only — viewSecret never sent to the server. */
+  viewPub?: unknown;
+  /** Public spend key (owner_pk) only — spendSecret never sent to the server. */
+  spendPub?: unknown;
 };
 
 @Injectable()
@@ -24,6 +29,7 @@ export class BusinessService {
   constructor(
     private readonly access: BusinessAccessService,
     private readonly prisma: PrismaService,
+    private readonly paymentsApiSync: PaymentsApiSyncService,
   ) {}
 
   async getProfile(request: Request) {
@@ -68,6 +74,12 @@ export class BusinessService {
             })
           : resolved.business;
 
+      this.paymentsApiSync.pushMerchantSettings({
+        businessId: business.id,
+        walletAddress: business.walletAddress,
+        receiveAddress: business.receiveAddress,
+      });
+
       return {
         businessId: business.id,
         receiveAddress: business.receiveAddress ?? null,
@@ -88,6 +100,11 @@ export class BusinessService {
       const business = await this.prisma.business.update({
         where: { id: resolved.business.id },
         data: { receiveAddress: address },
+      });
+      this.paymentsApiSync.pushMerchantSettings({
+        businessId: business.id,
+        walletAddress: business.walletAddress,
+        receiveAddress: business.receiveAddress,
       });
       return {
         businessId: business.id,
@@ -126,6 +143,34 @@ export class BusinessService {
     if (selectedTierName !== undefined)
       update.selectedTierName = selectedTierName;
 
+    if (input.viewPub !== undefined) {
+      const viewPub = nullableString(input.viewPub);
+      if (viewPub === undefined) {
+        /* ignore non-string */
+      } else if (viewPub !== null && !isPlausibleHexPub(viewPub)) {
+        throw this.error(
+          HttpStatus.BAD_REQUEST,
+          'viewPub must be a non-empty hex public viewing key',
+        );
+      } else {
+        update.viewPub = viewPub;
+      }
+    }
+
+    if (input.spendPub !== undefined) {
+      const spendPub = nullableString(input.spendPub);
+      if (spendPub === undefined) {
+        /* ignore non-string */
+      } else if (spendPub !== null && !isPlausibleHexPub(spendPub)) {
+        throw this.error(
+          HttpStatus.BAD_REQUEST,
+          'spendPub must be a non-empty hex public spend key (owner_pk)',
+        );
+      } else {
+        update.spendPub = spendPub;
+      }
+    }
+
     return update;
   }
 
@@ -136,6 +181,8 @@ export class BusinessService {
     id: string;
     name: string | null;
     receiveAddress: string | null;
+    viewPub: string | null;
+    spendPub: string | null;
     selectedTier: string | null;
     selectedTierAt: Date | null;
     selectedTierName: string | null;
@@ -151,6 +198,8 @@ export class BusinessService {
       selectedTierName: business.selectedTierName,
       selectedTierAt: business.selectedTierAt?.toISOString() ?? null,
       receiveAddress: business.receiveAddress,
+      viewPub: business.viewPub ?? null,
+      spendPub: business.spendPub ?? null,
       complianceForm: business.complianceForm,
     };
   }
@@ -190,6 +239,12 @@ function nullableString(value: unknown): string | null | undefined {
   if (value === undefined) return undefined;
   if (value === null) return null;
   return typeof value === 'string' ? value.trim() || null : undefined;
+}
+
+/** Hex pubkey (with or without 0x); exact curve length validated client-side. */
+function isPlausibleHexPub(value: string): boolean {
+  const hex = value.replace(/^0x/i, '');
+  return /^[0-9a-fA-F]{32,256}$/.test(hex);
 }
 
 function normalizeTierId(value: unknown): string | null | undefined {

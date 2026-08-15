@@ -3,6 +3,7 @@ import type { Business } from '@prisma/client';
 import type { Request } from 'express';
 import { AuthService, type AppSession } from '../auth/auth.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { PaymentsApiSyncService } from './payments-api-sync.service';
 
 const DATABASE_UNAVAILABLE_MESSAGE =
   'Database unavailable. Check DATABASE_URL in .env and that MongoDB is reachable (network/VPN).';
@@ -17,6 +18,7 @@ export class BusinessAccessService {
   constructor(
     private readonly auth: AuthService,
     private readonly prisma: PrismaService,
+    private readonly paymentsApiSync: PaymentsApiSyncService,
   ) {}
 
   async getBusinessForRequest(
@@ -73,13 +75,27 @@ export class BusinessAccessService {
       where: { walletAddress },
     });
     if (business) {
+      // Keep API MerchantSettings warm for developer session + destination resolve
+      this.paymentsApiSync.pushMerchantSettings({
+        businessId: business.id,
+        walletAddress: business.walletAddress,
+        receiveAddress: business.receiveAddress,
+      });
       return business;
     }
     if (!createIfMissing) {
       throw this.error(HttpStatus.NOT_FOUND, 'Business not found');
     }
 
-    return this.prisma.business.create({ data: { walletAddress } });
+    const created = await this.prisma.business.create({
+      data: { walletAddress },
+    });
+    this.paymentsApiSync.pushMerchantSettings({
+      businessId: created.id,
+      walletAddress: created.walletAddress,
+      receiveAddress: created.receiveAddress,
+    });
+    return created;
   }
 
   private throwMappedError(error: unknown, context: string): never {
