@@ -1,0 +1,29 @@
+# Render Blueprint — Hypertron Core Backend
+# Create a Web Service from this repo. Prefer Docker (matches Dockerfile).
+
+services:
+  - type: web
+    name: hypertron-core-backend
+    runtime: docker
+    plan: starter
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: AUTH_SECRET
+        sync: false
+      - key: CORS_ORIGIN
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: PAYMENT_POOL_ADDRESS
+        sync: false
+      - key: MERCHANT_RECIPIENT
+        sync: false
+      - key: COOKIE_SAMESITE
+        value: none

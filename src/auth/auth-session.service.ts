@@ -124,12 +124,17 @@ export class AuthSessionService {
   }
 
   private cookieOptions(maxAgeSeconds: number) {
+    const sameSite =
+      process.env.COOKIE_SAMESITE?.trim().toLowerCase() === 'none'
+        ? ('none' as const)
+        : ('lax' as const);
+
     return {
       httpOnly: true,
       maxAge: maxAgeSeconds * 1000,
       path: '/',
-      sameSite: 'lax' as const,
-      secure: process.env.NODE_ENV === 'production',
+      sameSite,
+      secure: process.env.NODE_ENV === 'production' || sameSite === 'none',
     };
   }
 }
