@@ -1,4 +1,7 @@
 // Hypertron core — Freighter identity + merchant payment links (non-custodial)
+//
+// OWNERSHIP: This schema is the sole owner of Business, PaymentLink, and
+// AuthChallenge. hypertron-api must not prisma db push against these collections.
 
 generator client {
   provider = "prisma-client-js"
@@ -27,6 +30,10 @@ model Business {
   id              String    @id @default(cuid()) @map("_id")
   walletAddress   String    @unique // Stellar G... Freighter login identity
   receiveAddress  String? // Stellar G... / C... where this business receives payments
+  /// Public viewing key for private notes; viewSecret never leaves the browser.
+  viewPub         String?
+  /// Public spend key (owner_pk); spendSecret never leaves the browser.
+  spendPub        String?
   name            String?
   email           String?
   businessNature  String?
@@ -51,13 +58,28 @@ model PaymentLink {
   purpose            String?
   clientName         String?
   workflowStage      String?
+  /// Merchant-authored content + privateSettlement flag — not shield crypto.
   metadata           String?
   paymentMethods     String[]  @default(["wallet", "qr"])
   expiresAt          DateTime?
   linkMemo           String    @unique
   destinationAddress String
+  /// Merchant derives n,k from (viewSecret, salt) — store explicitly, not in metadata.
+  shieldSalt         String?
+  /// 32-byte hex note commitment the customer funds.
+  shieldCommitment   String?
+  /// ~384-byte Groth16 proof hex (~768 chars).
+  shieldProof        String?
   paidAt             DateTime?
   paymentTxHash      String?
+  /// When payer submitted a private transfer claiming this link.
+  claimedAt          DateTime?
+  /// Transfer tx hash from payer.
+  claimTxHash        String?
+  /// The out_cm1 (recipient note commitment) from the transfer.
+  claimOutCommitment String?
+  /// Merchant confirmed decrypting the note (final state).
+  confirmedAt        DateTime?
   createdAt          DateTime  @default(now())
 
   @@index(businessId)

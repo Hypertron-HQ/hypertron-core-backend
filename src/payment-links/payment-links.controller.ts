@@ -20,4 +20,17 @@ export class PaymentLinksController {
   findPublic(@Param('id') id: string) {
     return this.paymentLinksService.findPublic(id);
   }
+
+  @Post(':id/claim')
+  claim(@Param('id') id: string, @Body() body: Record<string, unknown>) {
+    return this.paymentLinksService.claim(id, body ?? {});
+  }
+
+  @Post(':id/confirm')
+  confirm(
+    @Req() request: Request,
+    @Param('id') id: string,
+  ) {
+    return this.paymentLinksService.confirm(request, id);
+  }
 }
