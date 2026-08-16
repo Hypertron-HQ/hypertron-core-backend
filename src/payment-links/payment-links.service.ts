@@ -243,20 +243,46 @@ export class PaymentLinksService {
         throw this.error(HttpStatus.CONFLICT, 'Link already paid');
       }
       if (link.claimedAt) {
+        const existing = (link.claimOutCommitment ?? '').replace(/^0x/i, '').toLowerCase();
+        const incoming = outCommitment.replace(/^0x/i, '').toLowerCase();
+        if (existing && existing === incoming) {
+          return {
+            id: link.id,
+            claimedAt: link.claimedAt,
+            claimTxHash: link.claimTxHash,
+            claimOutCommitment: link.claimOutCommitment,
+            paidAt: link.paidAt,
+            paymentTxHash: link.paymentTxHash,
+          };
+        }
         throw this.error(HttpStatus.CONFLICT, 'Link already claimed');
       }
       if (isLinkExpired(link.expiresAt)) {
         throw this.error(HttpStatus.GONE, 'Payment link has expired');
       }
 
+      const normalizedOut = outCommitment.startsWith('0x')
+        ? outCommitment
+        : `0x${outCommitment}`;
+      const invoiceNote = (link.shieldCommitment ?? '')
+        .replace(/^0x/i, '')
+        .toLowerCase();
+      const isInvoiceDeposit =
+        invoiceNote.length > 0 &&
+        invoiceNote === normalizedOut.replace(/^0x/i, '').toLowerCase();
+
       const updated = await this.prisma.paymentLink.update({
         where: { id },
         data: {
           claimedAt: new Date(),
           claimTxHash: txHash,
-          claimOutCommitment: outCommitment.startsWith('0x')
-            ? outCommitment
-            : `0x${outCommitment}`,
+          claimOutCommitment: normalizedOut,
+          ...(isInvoiceDeposit
+            ? {
+                paidAt: new Date(),
+                paymentTxHash: txHash,
+              }
+            : {}),
         },
       });
 
@@ -265,6 +291,8 @@ export class PaymentLinksService {
         claimedAt: updated.claimedAt,
         claimTxHash: updated.claimTxHash,
         claimOutCommitment: updated.claimOutCommitment,
+        paidAt: updated.paidAt,
+        paymentTxHash: updated.paymentTxHash,
       };
     } catch (error) {
       this.throwMappedError(error, 'Payment link claim error');
