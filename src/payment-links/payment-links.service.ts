@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import type { Request } from 'express';
 import { BusinessAccessService } from '../business/business-access.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { CollectReconcilerService } from '../reconciler/collect-reconciler.service';
 
 const DATABASE_UNAVAILABLE_MESSAGE =
   'Database unavailable. Check DATABASE_URL in .env and that MongoDB is reachable (network/VPN).';
@@ -31,6 +32,7 @@ export class PaymentLinksService {
   constructor(
     private readonly access: BusinessAccessService,
     private readonly prisma: PrismaService,
+    private readonly collectReconciler: CollectReconcilerService,
   ) {}
 
   async create(request: Request, input: PaymentLinkInput) {
@@ -264,25 +266,18 @@ export class PaymentLinksService {
       const normalizedOut = outCommitment.startsWith('0x')
         ? outCommitment
         : `0x${outCommitment}`;
-      const invoiceNote = (link.shieldCommitment ?? '')
-        .replace(/^0x/i, '')
-        .toLowerCase();
-      const isInvoiceDeposit =
-        invoiceNote.length > 0 &&
-        invoiceNote === normalizedOut.replace(/^0x/i, '').toLowerCase();
 
+      // Always mark paid on claim so Collect status updates immediately.
+      // Merchant confirm() still sets confirmedAt after the note is decrypted.
+      const now = new Date();
       const updated = await this.prisma.paymentLink.update({
         where: { id },
         data: {
-          claimedAt: new Date(),
+          claimedAt: now,
           claimTxHash: txHash,
           claimOutCommitment: normalizedOut,
-          ...(isInvoiceDeposit
-            ? {
-                paidAt: new Date(),
-                paymentTxHash: txHash,
-              }
-            : {}),
+          paidAt: now,
+          paymentTxHash: txHash,
         },
       });
 
@@ -296,6 +291,68 @@ export class PaymentLinksService {
       };
     } catch (error) {
       this.throwMappedError(error, 'Payment link claim error');
+    }
+  }
+
+  /**
+   * On-demand status check. For classic G-address links, runs Horizon
+   * reconciliation so Collect / pay pages do not wait on the 30s scheduler.
+   * Optional txHash verifies that specific payer-reported transaction.
+   */
+  async checkStatus(id: string, txHash?: string) {
+    try {
+      const link = await this.prisma.paymentLink.findUnique({ where: { id } });
+      if (!link) {
+        throw this.error(HttpStatus.NOT_FOUND, 'Payment link not found');
+      }
+
+      if (isLinkExpired(link.expiresAt) && !link.paidAt && !link.claimedAt) {
+        throw new HttpException(
+          { status: 'expired', error: 'This payment link has expired' },
+          HttpStatus.GONE,
+        );
+      }
+
+      if (link.paidAt || link.confirmedAt || link.claimedAt) {
+        return {
+          status: 'paid' as const,
+          paidAt: link.paidAt ?? link.confirmedAt ?? link.claimedAt,
+          paymentTxHash: link.paymentTxHash ?? link.claimTxHash,
+          claimedAt: link.claimedAt,
+          confirmedAt: link.confirmedAt,
+        };
+      }
+
+      const outcome = txHash?.trim()
+        ? await this.collectReconciler.reconcilePaymentLinkWithTxHash(
+            link,
+            txHash.trim(),
+          )
+        : await this.collectReconciler.reconcilePaymentLink(link);
+
+      if (outcome === 'link_paid') {
+        const fresh = await this.prisma.paymentLink.findUnique({
+          where: { id },
+        });
+        return {
+          status: 'paid' as const,
+          paidAt: fresh?.paidAt ?? null,
+          paymentTxHash: fresh?.paymentTxHash ?? null,
+          claimedAt: fresh?.claimedAt ?? null,
+          confirmedAt: fresh?.confirmedAt ?? null,
+        };
+      }
+
+      return {
+        status: 'pending' as const,
+        paidAt: null,
+        paymentTxHash: null,
+        claimedAt: null,
+        confirmedAt: null,
+        outcome,
+      };
+    } catch (error) {
+      this.throwMappedError(error, 'Payment link status error');
     }
   }
 
