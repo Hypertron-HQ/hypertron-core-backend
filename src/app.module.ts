@@ -5,6 +5,7 @@ import { BusinessModule } from './business/business.module';
 import { PaymentLinksModule } from './payment-links/payment-links.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ReconcilerModule } from './reconciler/reconciler.module';
+import { WorkspacesModule } from './workspaces/workspaces.module';
 
 @Module({
   imports: [
@@ -13,6 +14,7 @@ import { ReconcilerModule } from './reconciler/reconciler.module';
     BusinessModule,
     PaymentLinksModule,
     ReconcilerModule,
+    WorkspacesModule,
   ],
   controllers: [AppController],
   providers: [],

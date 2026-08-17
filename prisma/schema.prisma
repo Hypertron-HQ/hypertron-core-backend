@@ -27,26 +27,69 @@ model AuthChallenge {
 }
 
 model Business {
-  id              String    @id @default(cuid()) @map("_id")
-  walletAddress   String    @unique // Stellar G... Freighter login identity
-  receiveAddress  String? // Stellar G... / C... where this business receives payments
+  id                   String    @id @default(cuid()) @map("_id")
+  // Legacy owner/payment fallback address. Workspace access is owned by BusinessMember.
+  walletAddress        String // Stellar G... Freighter login identity
+  receiveAddress       String? // Stellar G... / C... where this business receives payments
   /// Public viewing key for private notes; viewSecret never leaves the browser.
-  viewPub         String?
+  viewPub              String?
   /// Public spend key (owner_pk); spendSecret never leaves the browser.
-  spendPub        String?
-  name            String?
-  email           String?
-  businessNature  String?
-  selectedWidgets String[]
-  selectedTier    String?
-  selectedTierName String?
-  selectedTierAt  DateTime?
-  complianceForm  Json?
-  createdAt       DateTime  @default(now())
+  spendPub             String?
+  name                 String?
+  email                String?
+  businessNature       String?
+  selectedWidgets      String[]
+  selectedTier         String?
+  selectedTierName     String?
+  selectedTierAt       DateTime?
+  complianceForm       Json?
+  workspaceType        String?
+  website              String?
+  teamSize             String?
+  logoDataUrl          String?
+  logoName             String?
+  operationModules     String[]
+  walletProvider       String?
+  supportedChains      String[]
+  invitedMembers       Json?
+  integrations         String[]
+  complianceFrameworks String[]
+  complianceMonitoring String[]
+  dataResidency        String?
+  dataRetention        String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
   paymentLinks PaymentLink[]
+  members      BusinessMember[]
 
+  @@index(walletAddress)
   @@index(selectedTier)
+}
+
+// Wallet-based access to a Business workspace. This keeps businessId as the
+// isolation key used by payment links and the payments API.
+model BusinessMember {
+  id             String   @id @default(cuid()) @map("_id")
+  businessId     String
+  business       Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  walletAddress  String
+  role           String   @default("owner")
+  lastAccessedAt DateTime @default(now())
+  createdAt      DateTime @default(now())
+
+  @@unique([walletAddress, businessId])
+  @@index([walletAddress, lastAccessedAt])
+  @@index(businessId)
+}
+
+// Active workspace is persisted server-side so old session cookies remain
+// valid and cross-origin cookie behavior does not change.
+model WalletPreference {
+  id               String   @id @default(cuid()) @map("_id")
+  walletAddress    String   @unique
+  activeBusinessId String?
+  updatedAt        DateTime @updatedAt
 }
 
 model PaymentLink {
