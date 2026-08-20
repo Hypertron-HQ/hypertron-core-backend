@@ -21,6 +21,14 @@ export class PaymentLinksController {
     return this.paymentLinksService.findPublic(id);
   }
 
+  @Get(':id/status')
+  checkStatus(
+    @Param('id') id: string,
+    @Query('txHash') txHash?: string,
+  ) {
+    return this.paymentLinksService.checkStatus(id, txHash);
+  }
+
   @Post(':id/claim')
   claim(@Param('id') id: string, @Body() body: Record<string, unknown>) {
     return this.paymentLinksService.claim(id, body ?? {});

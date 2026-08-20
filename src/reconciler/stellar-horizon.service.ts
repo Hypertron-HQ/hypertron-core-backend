@@ -118,6 +118,50 @@ export class StellarHorizonService {
     });
   }
 
+  /** Load payment ops for a known transaction hash (payer-reported). */
+  async listPaymentsForTransaction(
+    txHash: string,
+    environment: HorizonEnvironment,
+  ): Promise<HorizonPaymentRecord[]> {
+    const server = this.getServer(environment);
+    const breaker = this.getBreaker(environment);
+
+    return breaker.exec(async () => {
+      const tx = await this.withRetry(() =>
+        server.transactions().transaction(txHash).call(),
+      );
+      const ops = await this.withRetry(() => tx.operations());
+      const records: HorizonPaymentRecord[] = [];
+
+      for (const op of ops.records) {
+        if (op.type !== 'payment') continue;
+        const payment = op as Horizon.ServerApi.PaymentOperationRecord;
+        records.push({
+          id: payment.id,
+          transactionHash: txHash,
+          from: payment.from,
+          to: payment.to,
+          amount: payment.amount,
+          assetType: payment.asset_type,
+          assetCode:
+            payment.asset_type === 'native'
+              ? 'XLM'
+              : (payment.asset_code ?? null),
+          assetIssuer:
+            payment.asset_type === 'native'
+              ? null
+              : (payment.asset_issuer ?? null),
+          createdAt: new Date(payment.created_at),
+          memo: tx.memo ?? null,
+          memoType: tx.memo_type ?? null,
+          successful: Boolean(tx.successful),
+        });
+      }
+
+      return records;
+    });
+  }
+
   private getServer(environment: HorizonEnvironment): Horizon.Server {
     const key = environment === 'live' ? 'live' : 'test';
     let server = this.servers.get(key);

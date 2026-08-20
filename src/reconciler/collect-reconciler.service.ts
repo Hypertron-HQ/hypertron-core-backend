@@ -105,6 +105,57 @@ export class CollectReconcilerService {
       return 'horizon_unavailable';
     }
 
+    return this.finalizeMatch(link, records, environment);
+  }
+
+  /**
+   * Payer-reported tx: verify that specific hash against the link and mark paid.
+   * More reliable than account lookback right after submit.
+   */
+  async reconcilePaymentLinkWithTxHash(
+    link: PaymentLink,
+    txHash: string,
+  ): Promise<ReconcileOutcome> {
+    if (link.paidAt || link.paymentTxHash) return 'skipped';
+    if (!link.amount) return 'skipped';
+    if (!isClassicStellarAddress(link.destinationAddress)) return 'skipped';
+
+    const environment = resolveEnvironment();
+    let records;
+    try {
+      records = await this.horizon.listPaymentsForTransaction(
+        txHash.trim(),
+        environment,
+      );
+    } catch (err) {
+      if (err instanceof CircuitOpenError) {
+        this.logger.warn(
+          { environment, linkId: link.id },
+          'Horizon circuit open — skipping tx report reconcile',
+        );
+        return 'horizon_unavailable';
+      }
+      this.logger.error(
+        {
+          linkId: link.id,
+          txHash,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        'Horizon tx lookup failed for PaymentLink',
+      );
+      return 'horizon_unavailable';
+    }
+
+    return this.finalizeMatch(link, records, environment);
+  }
+
+  private async finalizeMatch(
+    link: PaymentLink,
+    records: Awaited<
+      ReturnType<StellarHorizonService['listPaymentsForAccount']>
+    >,
+    environment: HorizonEnvironment,
+  ): Promise<ReconcileOutcome> {
     const knownHashes = await this.loadForeignHashes(
       records.map((r) => r.transactionHash),
       link.id,
@@ -114,7 +165,7 @@ export class CollectReconcilerService {
       {
         linkMemo: link.linkMemo,
         destinationAddress: link.destinationAddress,
-        amount: link.amount,
+        amount: link.amount!,
         currency: link.currency,
         environment,
         expiresAt: link.expiresAt,
@@ -181,6 +232,15 @@ export class CollectReconcilerService {
 }
 
 function resolveEnvironment(): HorizonEnvironment {
+  const raw = (
+    process.env.STELLAR_NETWORK ||
+    process.env.NEXT_PUBLIC_STELLAR_NETWORK ||
+    ''
+  )
+    .trim()
+    .toLowerCase();
+  if (raw === 'public' || raw === 'mainnet' || raw === 'live') return 'live';
+  if (raw === 'testnet' || raw === 'test') return 'test';
   return process.env.NODE_ENV === 'production' ? 'live' : 'test';
 }
 

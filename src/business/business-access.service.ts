@@ -51,14 +51,43 @@ export class BusinessAccessService {
         throw this.error(HttpStatus.BAD_REQUEST, 'businessId required');
       }
       const session = this.auth.getAppSession(request);
-      const business = await this.prisma.business.findFirst({
-        where: { id, walletAddress: session.walletAddress },
+      let membership = await this.prisma.businessMember.findUnique({
+        where: {
+          walletAddress_businessId: {
+            walletAddress: session.walletAddress,
+            businessId: id,
+          },
+        },
+        include: { business: true },
       });
-      if (!business) {
+      if (!membership) {
+        const legacy = await this.prisma.business.findFirst({
+          where: { id, walletAddress: session.walletAddress },
+        });
+        if (legacy) {
+          membership = await this.prisma.businessMember.upsert({
+            where: {
+              walletAddress_businessId: {
+                walletAddress: session.walletAddress,
+                businessId: legacy.id,
+              },
+            },
+            create: {
+              businessId: legacy.id,
+              walletAddress: session.walletAddress,
+              role: 'owner',
+            },
+            update: {},
+            include: { business: true },
+          });
+          await this.setActiveBusiness(session.walletAddress, legacy.id);
+        }
+      }
+      if (!membership) {
         throw this.error(HttpStatus.FORBIDDEN, 'Forbidden');
       }
 
-      return { business, session };
+      return { business: membership.business, session };
     } catch (error) {
       this.throwMappedError(error, 'Business ownership lookup error');
     }
@@ -75,31 +104,99 @@ export class BusinessAccessService {
     walletAddress: string,
     createIfMissing: boolean,
   ): Promise<Business> {
-    const business = await this.prisma.business.findUnique({
+    const preference = await this.prisma.walletPreference.findUnique({
       where: { walletAddress },
     });
-    if (business) {
-      // Keep API MerchantSettings warm for developer session + destination resolve
-      this.paymentsApiSync.pushMerchantSettings({
-        businessId: business.id,
-        walletAddress: business.walletAddress,
-        receiveAddress: business.receiveAddress,
+    if (preference?.activeBusinessId) {
+      const active = await this.prisma.businessMember.findUnique({
+        where: {
+          walletAddress_businessId: {
+            walletAddress,
+            businessId: preference.activeBusinessId,
+          },
+        },
+        include: { business: true },
       });
-      return business;
+      if (active) {
+        this.syncMerchant(active.business);
+        return active.business;
+      }
     }
+
+    const recent = await this.prisma.businessMember.findFirst({
+      where: { walletAddress },
+      orderBy: { lastAccessedAt: 'desc' },
+      include: { business: true },
+    });
+    if (recent) {
+      await this.setActiveBusiness(walletAddress, recent.businessId);
+      this.syncMerchant(recent.business);
+      return recent.business;
+    }
+
+    // Lazy migration for records created before BusinessMember existed.
+    const legacy = await this.prisma.business.findFirst({
+      where: { walletAddress },
+      orderBy: { createdAt: 'asc' },
+    });
+    if (legacy) {
+      await this.prisma.businessMember.upsert({
+        where: {
+          walletAddress_businessId: {
+            walletAddress,
+            businessId: legacy.id,
+          },
+        },
+        create: {
+          businessId: legacy.id,
+          walletAddress,
+          role: 'owner',
+        },
+        update: {},
+      });
+      await this.setActiveBusiness(walletAddress, legacy.id);
+      this.syncMerchant(legacy);
+      return legacy;
+    }
+
     if (!createIfMissing) {
       throw this.error(HttpStatus.NOT_FOUND, 'Business not found');
     }
 
     const created = await this.prisma.business.create({
-      data: { walletAddress },
+      data: {
+        walletAddress,
+        members: {
+          create: {
+            walletAddress,
+            role: 'owner',
+          },
+        },
+      },
     });
-    this.paymentsApiSync.pushMerchantSettings({
-      businessId: created.id,
-      walletAddress: created.walletAddress,
-      receiveAddress: created.receiveAddress,
-    });
+    await this.setActiveBusiness(walletAddress, created.id);
+    this.syncMerchant(created);
     return created;
+  }
+
+  private async setActiveBusiness(
+    walletAddress: string,
+    activeBusinessId: string,
+  ) {
+    await this.prisma.walletPreference.upsert({
+      where: { walletAddress },
+      create: { walletAddress, activeBusinessId },
+      update: { activeBusinessId },
+    });
+  }
+
+  private syncMerchant(business: Business) {
+    // Keep API MerchantSettings warm for developer session + destination resolve.
+    this.paymentsApiSync.pushMerchantSettings({
+      businessId: business.id,
+      walletAddress: business.walletAddress,
+      receiveAddress: business.receiveAddress,
+    });
   }
 
   private throwMappedError(error: unknown, context: string): never {
