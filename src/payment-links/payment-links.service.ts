@@ -444,11 +444,21 @@ export class PaymentLinksService {
   }
 
   private paymentLinkBaseUrl(request: Request): string {
-    const configured =
-      process.env.FRONTEND_URL?.trim() || process.env.APP_URL?.trim();
-    if (configured) return configured.replace(/\/$/, '');
+    const fromEnv = stripSlash(
+      process.env.FRONTEND_URL?.trim() || process.env.APP_URL?.trim() || '',
+    );
+    const fromOrigin = stripSlash(request.get('origin')?.trim() ?? '');
+    const fromReferer = originFromReferer(request.get('referer'));
+    const productionDefault = 'https://www.hypertron.space';
 
-    return `${request.protocol}://${request.get('host') ?? 'localhost:4000'}`;
+    if (fromEnv && !isLocalHost(fromEnv)) return fromEnv;
+    if (fromOrigin && !isLocalHost(fromOrigin)) return fromOrigin;
+    if (fromReferer && !isLocalHost(fromReferer)) return fromReferer;
+    if (fromOrigin) return fromOrigin;
+    if (fromEnv) return fromEnv;
+    if (process.env.NODE_ENV === 'production') return productionDefault;
+
+    return 'http://localhost:3000';
   }
 
   private async createUniqueMemo(): Promise<string> {
@@ -592,6 +602,33 @@ function parseExpiryDays(value: unknown): Date | null {
 
 function isLinkExpired(expiresAt: Date | null): boolean {
   return !!expiresAt && expiresAt.getTime() < Date.now();
+}
+
+function stripSlash(value: string): string {
+  return value.replace(/\/$/, '');
+}
+
+function isLocalHost(value: string): boolean {
+  try {
+    const { hostname } = new URL(value);
+    return (
+      hostname === 'localhost' ||
+      hostname === '127.0.0.1' ||
+      hostname === '[::1]' ||
+      hostname === '::1'
+    );
+  } catch {
+    return /localhost|127\.0\.0\.1/.test(value);
+  }
+}
+
+function originFromReferer(referer: string | undefined): string {
+  if (!referer) return '';
+  try {
+    return stripSlash(new URL(referer).origin);
+  } catch {
+    return '';
+  }
 }
 
 function isPrismaConnectionError(error: unknown): boolean {
