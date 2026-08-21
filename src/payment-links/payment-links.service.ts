@@ -21,7 +21,7 @@ type PaymentLinkInput = {
   paymentMethods?: unknown;
   purpose?: unknown;
   workflowStage?: unknown;
-  /** Merchant-precreated note material (private settlement only). */
+  /** Optional legacy merchant-precreated note material. */
   shieldSalt?: unknown;
   shieldCommitment?: unknown;
   shieldProof?: unknown;
@@ -405,7 +405,7 @@ export class PaymentLinksService {
   /**
    * Classic (privacy off): pay the merchant G-address directly
    *   receiveAddress → Freighter walletAddress → MERCHANT_RECIPIENT
-   * Private (privacy on): pool contract for shield deposit attribution
+   * Private (privacy on): pool contract; customer shields then transfers
    *   PAYMENT_POOL_ADDRESS → receiveAddress → walletAddress
    */
   private resolveDestinationAddress(
@@ -524,18 +524,24 @@ function normalizeShieldFields(
     return { shieldSalt: null, shieldCommitment: null, shieldProof: null };
   }
 
-  if (!shieldSalt || !shieldCommitment || !shieldProof) {
+  const provided = [shieldSalt, shieldCommitment, shieldProof].filter(Boolean);
+  // Customer pays from their own shielded notes, so merchant pre-mint
+  // material is optional. Accept a full legacy triple or none.
+  if (provided.length === 0) {
+    return { shieldSalt: null, shieldCommitment: null, shieldProof: null };
+  }
+  if (provided.length !== 3) {
     throw new HttpException(
       {
         error:
-          'Private settlement requires shieldSalt, shieldCommitment, and shieldProof (merchant-precreated note).',
+          'Private settlement shield fields must include shieldSalt, shieldCommitment, and shieldProof together, or be omitted.',
       },
       HttpStatus.BAD_REQUEST,
     );
   }
 
   // Commitment is 32 bytes hex (64 hex chars, optional 0x).
-  const commitmentHex = shieldCommitment.replace(/^0x/i, '');
+  const commitmentHex = shieldCommitment!.replace(/^0x/i, '');
   if (!/^[0-9a-fA-F]{64}$/.test(commitmentHex)) {
     throw new HttpException(
       { error: 'shieldCommitment must be 32-byte hex' },
@@ -545,7 +551,7 @@ function normalizeShieldFields(
 
   return {
     shieldSalt,
-    shieldCommitment: shieldCommitment.startsWith('0x')
+    shieldCommitment: shieldCommitment!.startsWith('0x')
       ? shieldCommitment
       : `0x${commitmentHex}`,
     shieldProof,
