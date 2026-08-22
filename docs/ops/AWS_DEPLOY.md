@@ -22,9 +22,18 @@ What *can* still happen:
 | Merging these files to the branch Render auto-deploys | Render will **rebuild and restart** the current image. Behavior stays the same because `src/`, `Dockerfile`, and `render.yaml` are unchanged. Expect a short restart, not a config change. |
 | Copying AWS env vars into the Render dashboard | **Do not do this.** That would be a live config change. |
 
-If you want zero Render restart, keep this work on a branch Render does not auto-deploy, or pause auto-deploy in Render while you merge.
+If you want zero Render restart, keep this work on `chore/aws-apprunner` (or any branch Render does not auto-deploy). Do not merge to `main` until you accept a short Render rebuild, or pause auto-deploy in Render while you merge.
 
-Do **not** point AWS at the live Render `DATABASE_URL`. Two instances sharing that database will both run the Collect reconciler against the same payment links.
+Do **not** point AWS at the live Render `DATABASE_URL`. Two instances sharing that database will both run the Collect reconciler against the same payment links. `deploy/aws/deploy.sh` refuses database names `hypertron` and `hypertron_api` unless `ALLOW_SHARED_RENDER_DB=true`.
+
+## Git branch (keep Render from auto-deploying this)
+
+Put these files on `chore/aws-apprunner` and push **that** branch only. Do not push or merge to `main` (or whichever branch Render auto-deploys) until you accept a short Render restart.
+
+```bash
+git checkout -b chore/aws-apprunner
+git push -u origin chore/aws-apprunner
+```
 
 ---
 
@@ -75,12 +84,15 @@ export DATABASE_URL='mongodb+srv://...'   # the AWS database, not Render
 pnpm db:deploy
 ```
 
-Then deploy:
+Then deploy (this does not call Render):
 
 ```bash
 chmod +x deploy/aws/deploy.sh
+./deploy/aws/deploy.sh --check
 ./deploy/aws/deploy.sh
 ```
+
+`--check` confirms `DATABASE_URL` is not the live Render database (`hypertron` / `hypertron_api`). The deploy script refuses those names unless `ALLOW_SHARED_RENDER_DB=true`.
 
 The script:
 

@@ -23,6 +23,14 @@ jobs:
     name: Build and push ECR image
     runs-on: ubuntu-latest
     steps:
+      - name: Confirm this is not a Render deploy
+        run: |
+          echo "This workflow only pushes a Docker image to Amazon ECR."
+          echo "It does not call Render and does not change Render env or DNS."
+          if [ "${GITHUB_REF_NAME}" = "main" ] || [ "${GITHUB_REF_NAME}" = "master" ]; then
+            echo "::warning::This Action still does not deploy Render, but this repo's main branch is what Render typically auto-deploys. Prefer running it from chore/aws-apprunner."
+          fi
+
       - name: Checkout
         uses: actions/checkout@v4
 

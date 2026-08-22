@@ -13,6 +13,9 @@ const SECRET_KEYS = [
   "MERCHANT_RECIPIENT",
 ];
 
+// Live Render databases from docs/ops (core = hypertron, api = hypertron_api).
+const LIVE_RENDER_DB_NAMES = new Set(["hypertron", "hypertron_api"]);
+
 function parseEnv(file) {
   const text = fs.readFileSync(file, "utf8");
   const all = {};
@@ -34,10 +37,56 @@ function parseEnv(file) {
   return all;
 }
 
+function mongoDatabaseName(url) {
+  const noQuery = String(url).split("?")[0];
+  const slash = noQuery.lastIndexOf("/");
+  if (slash < 0) return "";
+  return decodeURIComponent(noQuery.slice(slash + 1)).trim();
+}
+
+function assertIsolatedDatabase(url) {
+  const name = mongoDatabaseName(url);
+  if (!name) {
+    console.error("DATABASE_URL has no database name in the path.");
+    process.exit(1);
+  }
+  if (
+    LIVE_RENDER_DB_NAMES.has(name) &&
+    process.env.ALLOW_SHARED_RENDER_DB !== "true"
+  ) {
+    console.error(
+      `DATABASE_URL uses database "${name}", which is the live Render database.`,
+    );
+    console.error("Use a separate name such as hypertron_aws.");
+    console.error("Refusing to deploy so Render payment links are not shared.");
+    console.error(
+      "Override only if you understand the risk: ALLOW_SHARED_RENDER_DB=true",
+    );
+    process.exit(1);
+  }
+  return name;
+}
+
+function assertSecrets(all) {
+  const url = all.DATABASE_URL ?? "";
+  const auth = all.AUTH_SECRET ?? "";
+  if (!url || url.includes("USER:PASSWORD")) {
+    console.error("DATABASE_URL in .env.aws is missing or still a placeholder.");
+    process.exit(1);
+  }
+  if (!auth || auth.includes("replace-with")) {
+    console.error("AUTH_SECRET in .env.aws is missing or still a placeholder.");
+    process.exit(1);
+  }
+  return assertIsolatedDatabase(url);
+}
+
 const mode = process.argv[2];
 const file = process.argv[3];
 if (!mode || !file) {
-  console.error("usage: env-file.cjs <get KEY|secret-json> <env-file>");
+  console.error(
+    "usage: env-file.cjs <get KEY|secret-json|validate|db-name> <env-file>",
+  );
   process.exit(1);
 }
 
@@ -49,17 +98,21 @@ if (mode === "get") {
   process.exit(0);
 }
 
+if (mode === "db-name") {
+  process.stdout.write(mongoDatabaseName(all.DATABASE_URL ?? ""));
+  process.exit(0);
+}
+
+if (mode === "validate") {
+  const name = assertSecrets(all);
+  process.stdout.write(`ok database=${name}\n`);
+  process.exit(0);
+}
+
 if (mode === "secret-json") {
+  assertSecrets(all);
   const out = {};
   for (const k of SECRET_KEYS) out[k] = all[k] ?? "";
-  if (!out.DATABASE_URL || out.DATABASE_URL.includes("USER:PASSWORD")) {
-    console.error("DATABASE_URL in .env.aws is missing or still a placeholder.");
-    process.exit(1);
-  }
-  if (!out.AUTH_SECRET || out.AUTH_SECRET.includes("replace-with")) {
-    console.error("AUTH_SECRET in .env.aws is missing or still a placeholder.");
-    process.exit(1);
-  }
   process.stdout.write(JSON.stringify(out));
   process.exit(0);
 }

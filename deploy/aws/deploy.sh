@@ -5,6 +5,7 @@
 # Usage:
 #   ./deploy/aws/deploy.sh              # first-time or full update
 #   ./deploy/aws/deploy.sh --image-only # build+push; App Runner auto-deploys :latest
+#   ./deploy/aws/deploy.sh --check      # validate .env.aws; does not call AWS or Render
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -17,6 +18,7 @@ ENV_FILE="${ENV_FILE:-$ROOT/.env.aws}"
 CPU="${CPU:-0.5 vCPU}"
 MEMORY="${MEMORY:-1 GB}"
 IMAGE_ONLY=0
+CHECK_ONLY=0
 
 log() { printf '%s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -24,8 +26,9 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 for arg in "$@"; do
   case "$arg" in
     --image-only) IMAGE_ONLY=1 ;;
+    --check) CHECK_ONLY=1 ;;
     -h|--help)
-      sed -n '2,8p' "$0"
+      sed -n '2,9p' "$0"
       exit 0
       ;;
     *) die "unknown argument: $arg" ;;
@@ -36,9 +39,18 @@ need() {
   command -v "$1" >/dev/null 2>&1 || die "missing '$1'. Install it and retry."
 }
 
+need node
+
+if [[ "$CHECK_ONLY" -eq 1 ]]; then
+  [[ -f "$ENV_FILE" ]] || die "Missing $ENV_FILE — copy docs/ops/AWS_ENV.example to .env.aws and fill it in."
+  node "$ENV_HELPER" validate "$ENV_FILE"
+  log "OK: .env.aws is valid and does not use the live Render database names."
+  log "Render was not contacted. AWS was not contacted."
+  exit 0
+fi
+
 need aws
 need docker
-need node
 
 aws sts get-caller-identity --region "$REGION" >/dev/null \
   || die "AWS CLI is not authenticated. Run 'aws configure' or set AWS_PROFILE."
@@ -99,6 +111,9 @@ if [[ "$IMAGE_ONLY" -eq 1 ]]; then
 fi
 
 [[ -f "$ENV_FILE" ]] || die "Missing $ENV_FILE — copy docs/ops/AWS_ENV.example to .env.aws and fill it in."
+
+log "==> Validating .env.aws is not the live Render database"
+node "$ENV_HELPER" validate "$ENV_FILE"
 
 CORS_ORIGIN="$(node "$ENV_HELPER" get "$ENV_FILE" CORS_ORIGIN)"
 FRONTEND_URL="$(node "$ENV_HELPER" get "$ENV_FILE" FRONTEND_URL)"
