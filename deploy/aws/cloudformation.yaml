@@ -1,0 +1,233 @@
+# Hypertron Core Backend — AWS App Runner
+#
+# Independent of Render. Does not change the live Render service.
+# Application code, Dockerfile, and render.yaml are not used by this stack
+# except as the existing container build input.
+#
+# First deploy (no image in ECR yet):
+#   DeployService=false  → creates ECR only
+#   push the image
+#   DeployService=true   → creates App Runner
+#
+# Later deploys: push :latest (auto-deploy) or update ImageTag.
+
+AWSTemplateFormatVersion: "2010-09-09"
+Description: hypertron-core-backend on AWS App Runner (isolated from Render)
+
+Parameters:
+  DeployService:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: Set true only after an image has been pushed to ECR.
+
+  ImageTag:
+    Type: String
+    Default: latest
+    Description: ECR image tag App Runner should run.
+
+  SecretArn:
+    Type: String
+    Default: ""
+    Description: Secrets Manager ARN of the JSON secret (required when DeployService=true).
+
+  CorsOrigin:
+    Type: String
+    Default: https://www.hypertron.space
+    Description: Comma-separated browser origins for credentialed CORS.
+
+  FrontendUrl:
+    Type: String
+    Default: https://www.hypertron.space
+    Description: Public frontend origin used when building payment-link URLs.
+
+  PaymentsApiUrl:
+    Type: String
+    Default: ""
+    Description: Optional hypertron-api base URL. Leave empty to disable merchant sync.
+
+  CookieSameSite:
+    Type: String
+    Default: none
+    AllowedValues: ["none", "lax"]
+
+  Cpu:
+    Type: String
+    Default: "0.5 vCPU"
+    AllowedValues: ["0.25 vCPU", "0.5 vCPU", "1 vCPU", "2 vCPU", "4 vCPU"]
+
+  Memory:
+    Type: String
+    Default: "1 GB"
+    AllowedValues:
+      - "0.5 GB"
+      - "1 GB"
+      - "2 GB"
+      - "3 GB"
+      - "4 GB"
+      - "6 GB"
+      - "8 GB"
+      - "10 GB"
+      - "12 GB"
+
+Conditions:
+  ShouldDeployService: !Equals [!Ref DeployService, "true"]
+
+Resources:
+  Repository:
+    Type: AWS::ECR::Repository
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      RepositoryName: hypertron-core-backend
+      ImageTagMutability: MUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep last 15 images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 15
+                },
+                "action": { "type": "expire" }
+              }
+            ]
+          }
+      Tags:
+        - Key: Service
+          Value: hypertron-core-backend
+        - Key: Platform
+          Value: aws-apprunner
+
+  AccessRole:
+    Type: AWS::IAM::Role
+    Condition: ShouldDeployService
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - build.apprunner.amazonaws.com
+                - tasks.apprunner.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSAppRunnerServicePolicyForECRAccess
+      Tags:
+        - Key: Service
+          Value: hypertron-core-backend
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Condition: ShouldDeployService
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: tasks.apprunner.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ReadAppSecrets
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadSecret
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                Resource: !Ref SecretArn
+      Tags:
+        - Key: Service
+          Value: hypertron-core-backend
+
+  Service:
+    Type: AWS::AppRunner::Service
+    Condition: ShouldDeployService
+    Properties:
+      ServiceName: hypertron-core-backend
+      SourceConfiguration:
+        AuthenticationConfiguration:
+          AccessRoleArn: !GetAtt AccessRole.Arn
+        AutoDeploymentsEnabled: true
+        ImageRepository:
+          ImageIdentifier: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/hypertron-core-backend:${ImageTag}
+          ImageRepositoryType: ECR
+          ImageConfiguration:
+            Port: "4000"
+            RuntimeEnvironmentVariables:
+              - Name: NODE_ENV
+                Value: production
+              - Name: PORT
+                Value: "4000"
+              - Name: CORS_ORIGIN
+                Value: !Ref CorsOrigin
+              - Name: FRONTEND_URL
+                Value: !Ref FrontendUrl
+              - Name: COOKIE_SAMESITE
+                Value: !Ref CookieSameSite
+              - Name: PAYMENTS_API_URL
+                Value: !Ref PaymentsApiUrl
+            RuntimeEnvironmentSecrets:
+              - Name: DATABASE_URL
+                Value: !Sub "${SecretArn}:DATABASE_URL::"
+              - Name: AUTH_SECRET
+                Value: !Sub "${SecretArn}:AUTH_SECRET::"
+              - Name: SERVICE_ACCOUNT_API_KEY
+                Value: !Sub "${SecretArn}:SERVICE_ACCOUNT_API_KEY::"
+              - Name: SERVICE_ACCOUNT_WALLET
+                Value: !Sub "${SecretArn}:SERVICE_ACCOUNT_WALLET::"
+              - Name: INTERNAL_SERVICE_TOKEN
+                Value: !Sub "${SecretArn}:INTERNAL_SERVICE_TOKEN::"
+              - Name: PAYMENT_POOL_ADDRESS
+                Value: !Sub "${SecretArn}:PAYMENT_POOL_ADDRESS::"
+              - Name: MERCHANT_RECIPIENT
+                Value: !Sub "${SecretArn}:MERCHANT_RECIPIENT::"
+      InstanceConfiguration:
+        Cpu: !Ref Cpu
+        Memory: !Ref Memory
+        InstanceRoleArn: !GetAtt InstanceRole.Arn
+      HealthCheckConfiguration:
+        Protocol: HTTP
+        Path: /health
+        Interval: 10
+        Timeout: 5
+        HealthyThreshold: 1
+        UnhealthyThreshold: 5
+      NetworkConfiguration:
+        IngressConfiguration:
+          IsPubliclyAccessible: true
+        EgressConfiguration:
+          EgressType: DEFAULT
+      Tags:
+        - Key: Service
+          Value: hypertron-core-backend
+        - Key: Platform
+          Value: aws-apprunner
+
+Outputs:
+  EcrUri:
+    Description: Docker image URI prefix (append :tag)
+    Value: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/hypertron-core-backend
+  ServiceUrl:
+    Condition: ShouldDeployService
+    Description: Public App Runner HTTPS URL (https:// is implied by clients)
+    Value: !Sub https://${Service.ServiceUrl}
+  ServiceArn:
+    Condition: ShouldDeployService
+    Value: !GetAtt Service.ServiceArn
+  AccessRoleArn:
+    Condition: ShouldDeployService
+    Value: !GetAtt AccessRole.Arn
+  InstanceRoleArn:
+    Condition: ShouldDeployService
+    Value: !GetAtt InstanceRole.Arn

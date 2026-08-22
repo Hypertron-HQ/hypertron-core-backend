@@ -1,0 +1,31 @@
+# =============================================================================
+# Hypertron Core Backend — AWS App Runner environment
+# Copy to repo-root .env.aws (gitignored). Never commit real secrets.
+# Used by deploy/aws/deploy.sh to create/update Secrets Manager.
+#
+# This file is AWS-only. Do not paste these values into the live Render service.
+# =============================================================================
+
+# --- Public / non-secret (passed as App Runner env vars) ---
+CORS_ORIGIN=https://www.hypertron.space
+FRONTEND_URL=https://www.hypertron.space
+COOKIE_SAMESITE=none
+
+# Optional. Leave empty unless this AWS instance should sync merchants to hypertron-api.
+# Do not point at Render unless you intentionally want AWS → Render API traffic.
+PAYMENTS_API_URL=
+
+# --- Secrets (stored in AWS Secrets Manager as JSON) ---
+# Use a SEPARATE Atlas database name from live Render (e.g. /hypertron_aws).
+# Sharing the Render DATABASE_URL runs two reconcilers on the same payment links.
+DATABASE_URL=mongodb+srv://USER:PASSWORD@CLUSTER/hypertron_aws?retryWrites=true&w=majority
+
+# Generate a NEW secret for AWS. Do not reuse the live Render AUTH_SECRET
+# unless you want AWS and Render to accept the same dashboard cookies.
+AUTH_SECRET=replace-with-a-long-random-secret
+
+SERVICE_ACCOUNT_API_KEY=ht_svc_replace-with-a-long-random-hex
+SERVICE_ACCOUNT_WALLET=GSVCACCOUNTTESTNET00000000000000000000000000000000000000
+INTERNAL_SERVICE_TOKEN=
+PAYMENT_POOL_ADDRESS=
+MERCHANT_RECIPIENT=

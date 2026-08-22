@@ -2,6 +2,7 @@ node_modules
 dist
 coverage
 .env
+.env.aws
 .env.local
 .env.*.local
 .DS_Store
