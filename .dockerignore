@@ -2,10 +2,13 @@ node_modules
 dist
 coverage
 .git
+.github
 .env
 .env.*
 !.env.example
 *.md
+docs
+deploy
 test
 migration
 .cursor
